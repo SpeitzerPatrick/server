@@ -1,4 +1,4 @@
-version: "3"
+# version字段已过时，移除以避免警告
 
 services:
   #client_bots:
@@ -9,14 +9,28 @@ services:
       #- "./config/client_bots/:/app/config/client_bots"
       #- "./config/cert/:/app/config/cert"
       #- "./config/entry/:/app/config/entry"
-  
+  loki:
+    image: grafana/loki:3.5.0
+    container_name: loki
+    ports:
+      - "3100:3100"
+    environment:
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./config/loki/:/etc/loki
+      - ./data/loki/:/tmp/loki
+    command: -config.file=/etc/loki/loki-local-config.yaml
+    restart: unless-stopped
+
   game:
-    image: hellodudu86/game
+    image: game:latest
     container_name: game
     # command: "-config_file=config/game/config.toml"
     ports:
       - "7030:7030"
-      - "8080:8080"
+      - "8090:8090"
+      - "8445:8445"
+      - "4433:4433"
     volumes:
       - "./config/game/:/app/server/config/game"
       - "./config/cert/:/app/server/config/cert"
@@ -43,7 +57,7 @@ services:
 
 
   gate:
-    image: hellodudu86/gate
+    image: gate:latest
     container_name: gate
     # command: "-config_file=config/gate/config.toml"
     volumes:
@@ -51,8 +65,11 @@ services:
       - "./config/cert/:/app/server/config/cert"
       - "./config/csv/:/app/server/config/csv"
     ports:
-      - "80:80"
-      - "443:443"
+      - "8081:8081"
+      - "8443:8443"
+      - "7081:7080"
+    # 如果需要使用80/443端口，取消下面的注释
+    # privileged: true
     environment:
       TZ: "Asia/Shanghai"
       MICRO_REGISTRY: "mdns"
@@ -75,7 +92,7 @@ services:
         loki-batch-size: "400"
 
   mail:
-    image: hellodudu86/mail
+    image: mail:latest
     container_name: mail
     # command: "-config_file=config/mail/config.toml"
     volumes:
@@ -83,7 +100,8 @@ services:
       - "./config/cert/:/app/server/config/cert"
       - "./config/csv/:/app/server/config/csv"
     ports:
-      - "8081:8081"
+      - "8180:8180"
+      - "8453:8453"
     environment:
       TZ: "Asia/Shanghai"
       MICRO_REGISTRY: "mdns"
@@ -106,7 +124,7 @@ services:
         loki-batch-size: "400"
 
   rank:
-    image: hellodudu86/rank
+    image: rank:latest
     container_name: rank
     # command: "-config_file=config/rank/config.toml"
     volumes:
@@ -114,7 +132,8 @@ services:
       - "./config/cert/:/app/server/config/cert"
       - "./config/csv/:/app/server/config/csv"
     ports:
-      - "8081:8081"
+      - "8190:8190"
+      - "8463:8463"
     environment:
       TZ: "Asia/Shanghai"
       MICRO_REGISTRY: "mdns"
@@ -137,7 +156,7 @@ services:
         loki-batch-size: "400"
 
   comment:
-    image: hellodudu86/comment
+    image: comment:latest
     container_name: comment
     # command: "-config_file=config/comment/config.toml"
     volumes:
@@ -145,7 +164,8 @@ services:
       - "./config/cert/:/app/server/config/cert"
       - "./config/csv/:/app/server/config/csv"
     ports:
-      - "8081:8081"
+      - "8200:8200"
+      - "8473:8473"
     environment:
       TZ: "Asia/Shanghai"
       MICRO_REGISTRY: "mdns"
@@ -168,16 +188,23 @@ services:
         loki-batch-size: "400"
         
   mongo:
-    image: mongo
+    image: mongo:5.0
     container_name: mongo
-    restart: always
+    restart: unless-stopped
     ports:
       - "27017:27017"
     environment:
       TZ: "Asia/Shanghai"
+      MONGO_INITDB_DATABASE: game
     volumes:
       - ./config/mongo/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
-      - ./data/database/:/data/db
+      - /home/speitzerlau/mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     # logging:
     #   driver: loki
     #   options:
@@ -211,7 +238,7 @@ services:
     #     loki-batch-size: "400"
 
   consul:
-    image: consul
+    image: consul:1.15.4
     command: "agent -server -bootstrap-expect=1 -bind=127.0.0.1 -enable-local-script-checks -log-level=info -config-dir=/config/consul -data-dir=/consul_data -ui -client=0.0.0.0"
     container_name: consul
     ports:
@@ -288,20 +315,6 @@ services:
         loki-url: http://host.docker.internal:3100/api/prom/push
         loki-retries: "5"
         loki-batch-size: "400"
-
-
-  loki:
-    image: grafana/loki
-    container_name: loki
-    ports:
-      - "3100:3100"
-    environment:
-      TZ: "Asia/Shanghai"
-    volumes:
-      - ./config/loki/:/etc/loki
-      - ./data/loki/:/tmp/loki
-    command: -config.file=/etc/loki/loki-local-config.yaml
-    restart: unless-stopped
 
   promtail:
     image: grafana/promtail

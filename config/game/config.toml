@@ -10,8 +10,8 @@ game_id = 201
 account_connect_max = 8000
 public_ip = "127.0.0.1"
 tcp_listen_addr = ":7030"
-websocket_listen_addr = ":445"
-http_listen_addr = ":8080"
+websocket_listen_addr = ":8445"
+http_listen_addr = ":8090"
 https_listen_addr = ":4433"
 
 # rate limit 服务器每秒可受理最多4000次rpc调用

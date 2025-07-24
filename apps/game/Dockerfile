@@ -1,5 +1,6 @@
-FROM alpine
-RUN apk add tzdata
+# 使用更小的基础镜像，或者使用已缓存的镜像
+FROM alpine:3.18
+RUN apk add --no-cache tzdata
 
 RUN mkdir /app
 RUN mkdir /app/server
