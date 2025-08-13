@@ -21,6 +21,6 @@ cert_path_release = "config/cert/hellodudu.crt"
 key_path_release = "config/cert/hellodudu.key"
 
 # http
-http_listen_addr = ":8082"
+http_listen_addr = ":8083"
 
-gate_addr = "localhost:7080"
+gate_addr = "gate:7080"

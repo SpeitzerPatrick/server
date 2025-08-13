@@ -104,83 +104,243 @@ func NewTransportClient(ctx *cli.Context, c *Client) *TransportClient {
 }
 
 func (t *TransportClient) connect(ctx context.Context) error {
-	// dial to server
-	var err error
-	addr := t.gateInfo.PublicTcpAddr
-	if t.protocol == "ws" {
-		addr = "wss://" + t.gateInfo.PublicWsAddr
+	connector := &TransportConnector{
+		client: t,
+		ctx:    ctx,
 	}
 
-	if t.ts, err = t.tr.Dial(addr); err != nil {
-		return fmt.Errorf("TransportClient.Connect failed: %w", err)
+	return connector.Execute()
+}
+
+// TransportConnector handles the complete connection establishment process
+type TransportConnector struct {
+	client *TransportClient
+	ctx    context.Context
+}
+
+// Execute performs the complete connection sequence
+func (c *TransportConnector) Execute() error {
+	log.Info().Int64("client_id", c.client.c.Id).
+		Str("protocol", c.client.protocol).
+		Msg("starting transport connection process")
+
+	// Step 1: Establish network connection
+	if err := c.establishNetworkConnection(); err != nil {
+		return fmt.Errorf("failed to establish network connection: %w", err)
 	}
 
-	atomic.StoreInt32(&t.connected, 1)
+	// Step 2: Initialize connection state
+	c.initializeConnectionState()
 
-	log.Info().
-		Str("local", t.ts.Local()).
-		Str("remote", t.ts.Remote()).
-		Msg("tcp dial success")
+	// Step 3: Initialize communication channel
+	c.initializeCommunicationChannel()
 
-	t.chSend = make(chan proto.Message, 100)
+	// Step 4: Perform handshake and authentication
+	if err := c.performHandshakeAndAuth(); err != nil {
+		return fmt.Errorf("failed to perform handshake and auth: %w", err)
+	}
 
-	// handshake
-	t.sendHandshake()
+	// Step 5: Start message processing goroutines
+	c.startMessageProcessing()
 
-	// logon
-	t.sendLogon()
-
-	// goroutine to send and recv messages
-	t.wg.Wrap(func() {
-		defer utils.CaptureException()
-		err := t.onSend(ctx)
-		if err != nil {
-			log.Warn().
-				Int64("client_id", t.c.Id).
-				Err(err).
-				Msg("TransportClient onSend finished")
-
-			atomic.StoreInt32(&t.needReconnect, 1)
-		}
-	})
-
-	t.wg.Wrap(func() {
-		defer utils.CaptureException()
-		err := t.onRecv(ctx)
-		if err != nil {
-			log.Warn().
-				Int64("client_id", t.c.Id).
-				Err(err).
-				Msg("TransportClient onRecv finished")
-
-			atomic.StoreInt32(&t.needReconnect, 1)
-		}
-	})
+	log.Info().Int64("client_id", c.client.c.Id).
+		Msg("transport connection established successfully")
 
 	return nil
 }
 
-func (t *TransportClient) sendHandshake() {
-	p := &pbGlobal.Handshake{
+// establishNetworkConnection creates the network connection to the server
+func (c *TransportConnector) establishNetworkConnection() error {
+	serverAddr := c.resolveServerAddress()
+
+	log.Debug().Int64("client_id", c.client.c.Id).
+		Str("server_addr", serverAddr).
+		Str("protocol", c.client.protocol).
+		Msg("dialing to server")
+
+	ts, err := c.client.tr.Dial(serverAddr)
+	if err != nil {
+		log.Error().Int64("client_id", c.client.c.Id).
+			Str("server_addr", serverAddr).
+			Err(err).
+			Msg("failed to dial server")
+		return err
+	}
+
+	c.client.ts = ts
+
+	log.Info().Int64("client_id", c.client.c.Id).
+		Str("local_addr", ts.Local()).
+		Str("remote_addr", ts.Remote()).
+		Str("protocol", c.client.protocol).
+		Msg("network connection established")
+
+	return nil
+}
+
+// resolveServerAddress determines the correct server address based on protocol
+func (c *TransportConnector) resolveServerAddress() string {
+	switch c.client.protocol {
+	case "ws":
+		return "wss://" + c.client.gateInfo.PublicWsAddr
+	case "tcp":
+		fallthrough
+	default:
+		return c.client.gateInfo.PublicTcpAddr
+	}
+}
+
+// initializeConnectionState sets up the connection state flags
+func (c *TransportConnector) initializeConnectionState() {
+	atomic.StoreInt32(&c.client.connected, 1)
+
+	log.Debug().Int64("client_id", c.client.c.Id).
+		Msg("connection state initialized")
+}
+
+// initializeCommunicationChannel creates the message sending channel
+func (c *TransportConnector) initializeCommunicationChannel() {
+	const channelBufferSize = 100
+	c.client.chSend = make(chan proto.Message, channelBufferSize)
+
+	log.Debug().Int64("client_id", c.client.c.Id).
+		Int("buffer_size", channelBufferSize).
+		Msg("communication channel initialized")
+}
+
+// performHandshakeAndAuth sends handshake and login messages
+func (c *TransportConnector) performHandshakeAndAuth() error {
+	log.Debug().Int64("client_id", c.client.c.Id).
+		Msg("performing handshake and authentication")
+
+	// Send handshake message
+	if err := c.sendHandshakeMessage(); err != nil {
+		return fmt.Errorf("handshake failed: %w", err)
+	}
+
+	// Send login message
+	if err := c.sendLoginMessage(); err != nil {
+		return fmt.Errorf("login failed: %w", err)
+	}
+
+	log.Debug().Int64("client_id", c.client.c.Id).
+		Msg("handshake and authentication completed")
+
+	return nil
+}
+
+// sendHandshakeMessage creates and sends the handshake message
+func (c *TransportConnector) sendHandshakeMessage() error {
+	handshakeMsg := &pbGlobal.Handshake{
 		ConnType:     pbGlobal.ConnType_New,
 		MsgType:      pbGlobal.MsgType_Direct,
-		ClientAddr:   t.ts.Local(),
-		UserId:       t.gateInfo.UserID,
+		ClientAddr:   c.client.ts.Local(),
+		UserId:       c.client.gateInfo.UserID,
 		ClientVer:    "0.0.1",
 		ClientResVer: "0.0.1",
 		Metadata:     make(map[string]string),
 	}
-	t.chSend <- p
+
+	log.Debug().Int64("client_id", c.client.c.Id).
+		Str("user_id", c.client.gateInfo.UserID).
+		Str("client_addr", c.client.ts.Local()).
+		Msg("sending handshake message")
+
+	c.client.chSend <- handshakeMsg
+	return nil
 }
 
-func (t *TransportClient) sendLogon() {
-	msg := &pbGlobal.C2S_AccountLogon{
-		UserId:      t.gateInfo.UserID,
-		AccountId:   t.gateInfo.AccountID,
-		AccountName: t.gateInfo.UserName,
+// sendLoginMessage creates and sends the login message
+func (c *TransportConnector) sendLoginMessage() error {
+	loginMsg := &pbGlobal.C2S_AccountLogon{
+		UserId:      c.client.gateInfo.UserID,
+		AccountId:   c.client.gateInfo.AccountID,
+		AccountName: c.client.gateInfo.UserName,
 	}
-	log.Info().Interface("msg", msg).Send()
-	t.chSend <- msg
+
+	log.Info().Int64("client_id", c.client.c.Id).
+		Str("user_id", c.client.gateInfo.UserID).
+		Int64("account_id", c.client.gateInfo.AccountID).
+		Str("account_name", c.client.gateInfo.UserName).
+		Msg("sending login message")
+
+	c.client.chSend <- loginMsg
+	return nil
+}
+
+// startMessageProcessing starts the send and receive goroutines
+func (c *TransportConnector) startMessageProcessing() {
+	log.Debug().Int64("client_id", c.client.c.Id).
+		Msg("starting message processing goroutines")
+
+	// Start message sending goroutine
+	c.startSendGoroutine()
+	q
+	// Start message receiving goroutine
+	c.startReceiveGoroutine()
+
+	log.Debug().Int64("client_id", c.client.c.Id).
+		Msg("message processing goroutines started")
+}
+
+// startSendGoroutine starts the message sending goroutine
+func (c *TransportConnector) startSendGoroutine() {
+	c.client.wg.Wrap(func() {
+		defer utils.CaptureException()
+
+		log.Debug().Int64("client_id", c.client.c.Id).
+			Msg("message send goroutine started")
+
+		err := c.client.onSend(c.ctx)
+		if err != nil {
+			log.Warn().Int64("client_id", c.client.c.Id).
+				Err(err).
+				Msg("message send goroutine finished with error")
+			atomic.StoreInt32(&c.client.needReconnect, 1)
+		} else {
+			log.Debug().Int64("client_id", c.client.c.Id).
+				Msg("message send goroutine finished normally")
+		}
+	})
+}
+
+// startReceiveGoroutine starts the message receiving goroutine
+func (c *TransportConnector) startReceiveGoroutine() {
+	c.client.wg.Wrap(func() {
+		defer utils.CaptureException()
+
+		log.Debug().Int64("client_id", c.client.c.Id).
+			Msg("message receive goroutine started")
+
+		err := c.client.onRecv(c.ctx)
+		if err != nil {
+			log.Warn().Int64("client_id", c.client.c.Id).
+				Err(err).
+				Msg("message receive goroutine finished with error")
+			atomic.StoreInt32(&c.client.needReconnect, 1)
+		} else {
+			log.Debug().Int64("client_id", c.client.c.Id).
+				Msg("message receive goroutine finished normally")
+		}
+	})
+}
+
+// sendHandshake sends a handshake message to the server
+// Deprecated: Use TransportConnector.sendHandshakeMessage() instead
+func (t *TransportClient) sendHandshake() {
+	connector := &TransportConnector{client: t}
+	if err := connector.sendHandshakeMessage(); err != nil {
+		log.Error().Int64("client_id", t.c.Id).Err(err).Msg("failed to send handshake")
+	}
+}
+
+// sendLogon sends a login message to the server
+// Deprecated: Use TransportConnector.sendLoginMessage() instead
+func (t *TransportClient) sendLogon() {
+	connector := &TransportConnector{client: t}
+	if err := connector.sendLoginMessage(); err != nil {
+		log.Error().Int64("client_id", t.c.Id).Err(err).Msg("failed to send login")
+	}
 }
 
 func (t *TransportClient) sendHeartBeat() {

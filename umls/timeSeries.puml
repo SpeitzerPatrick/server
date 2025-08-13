@@ -1,0 +1,42 @@
+@startuml
+participant ClientBot
+participant Gate
+participant GameSelector
+participant Game
+
+== 客户端初始化阶段 ==
+ClientBot -> ClientBot: 【Http Related】\n拉起客户端http服务、启动连接监控
+ClientBot -> ClientBot: 【initialize】\n1. 从配置文件里读取各个配置（clientId和gate_addr）\n2. 设置client_bots_num机器人数量
+ClientBot -> ClientBot: 【Initialize all client components】\n1. 初始化Client数据结构\n2. 传输层设置（client.transport的设置）\n3. 创建消息处理器和命令处理器
+ClientBot -> ClientBot: 【starts all client services】\n1. prepare Connection Info（即登录信息）\n2. 设置GateInfo结构体
+
+== 连接建立阶段 ==
+ClientBot -> Gate: 【TCP连接建立】\n通过gate_addr(gate:7080)建立TCP连接\nDial(c.client.gateInfo.PublicTcpAddr)
+Gate -> Gate: 【TransferGate.HandleSocket】\n1. 接收客户端连接\n2. 提交到协程池处理（阻塞等待消息）\n3. 等待握手消息
+
+== 握手阶段 ==
+ClientBot -> Gate: 【发送握手消息】\nHandshake{\n  ConnType: New,\n  MsgType: Direct,\n  UserId: clientId,\n  ClientVer: "0.0.1"\nsendHandshakeMessage()}
+Gate -> Gate: 【handleHandshake】\n1. 验证握手消息格式\n2. 检查客户端版本(TODO)\n3. 进行握手验证(TODO)
+
+== 游戏服务器选择阶段 ==
+Gate -> GameSelector: 【SelectGame】\n根据handshake.UserId选择游戏服务器\n使用一致性哈希算法
+GameSelector -> GameSelector: 【一致性哈希选择】\n1. 计算userId的CRC32值\n2. 通过consistent hash选择game节点\n3. 返回选中节点的metadata
+GameSelector -> Gate: 返回选中的Game节点信息\n{publicTcpAddr, gameId等}
+
+== 连接转发阶段 ==
+Gate -> Game: 【建立后端连接】\nDial(metadata["publicTcpAddr"])\n连接到选中的Game服务器
+Gate -> Gate: 【开始数据转发】\n1. 启动frontSock->backendSock转发协程\n2. 启动backendSock->frontSock转发协程\n3. 进入透明代理模式
+
+== 登录消息处理阶段 ==
+ClientBot -> Gate: 【发送登录消息】\nC2S_AccountLogon{\n  UserId: clientId,\n  AccountId: clientId,\n  AccountName: "botN"\n}
+Gate -> Game: 【透明转发登录消息】\n直接通过io.Copy转发到Game服务器
+Game -> Game: 【处理登录消息】\n1. handleAccountLogon处理\n2. AccountManager.Logon\n3. 创建或更新账号信息
+Game -> Gate: 【返回登录响应】\nS2C_AccountLogon响应消息
+Gate -> ClientBot: 【透明转发响应】\n通过io.Copy转发响应给客户端
+
+== 后续通信阶段 ==
+note over ClientBot, Game: 后续所有消息都通过Gate进行透明转发\nGate作为TCP代理，不解析具体业务消息
+ClientBot <-> Gate: 【透明双向转发】
+Gate <-> Game: 【透明双向转发】
+
+@enduml

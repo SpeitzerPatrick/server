@@ -1,0 +1,68 @@
+@startuml
+
+class Client {
+  - app : *cli.App
+  - Id : int64
+  - RWMutex : sync.RWMutex
+  --
+  - player : *Player
+  - gin : *GinServer
+  - transport : *TransportClient
+  - msgHandler : *MsgHandler
+  - cmder : *Commander
+  - prompt : *PromptUI
+  - chExec : chan ExecuteFunc
+  - exitFunc(error) : void
+  --
+  - GateAddr : string
+  - wg : utils.WaitGroupWrapper
+}
+
+class TransportClient {
+  - c : *Client
+  - tr : transport.Transport(传输层协议)
+  - ts : transport.Socket
+  - wg : utils.WaitGroupWrapper
+  - wgRecon : utils.WaitGroupWrapper
+  --
+  - gateInfo : *GateInfo
+  - tlsConf : *tls.Config
+  --
+  - protocol : string
+  - connected : int32
+  - needReconnect : int32
+  - cancelRecvSend : context.CancelFunc
+  - chDisconnect : chan int
+  - returnMsgName : chan string
+  - unProcedMsg : int32
+  --
+  - ticker : *time.Ticker
+  - chSend : chan proto.Message
+  - Mutex : sync.Mutex
+}
+
+class Context {
+  - Context : context.Context
+  - App : *App
+  - Command : *Command
+  - shellComplete : bool
+  - flagSet : *flag.FlagSet
+  - parentContext : *Context
+}
+
+Context --> App
+Context --> Command
+Context --> flag.FlagSet
+Context --> Context : parentContext
+Context --> context.Context
+
+Client --> TransportClient
+TransportClient --> Client
+TransportClient --> GateInfo
+TransportClient --> tls.Config
+TransportClient --> transport.Transport
+TransportClient --> transport.Socket
+TransportClient --> time.Ticker
+TransportClient --> proto.Message
+
+@enduml

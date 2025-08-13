@@ -24,9 +24,9 @@ cert_path_release = "config/cert/localhost.crt"
 key_path_release = "config/cert/localhost.key"
 
 # db
-db_dsn = "mongodb://localhost:27017"
+db_dsn = "mongodb://mongo:27017"
 database = "gate"
-redis_addr = "localhost:6379"
+redis_addr = "redis:6379"
 
 # gate evironment 线上环境不能用mdns作为registry，并发高的情况下会出现找不到服务的bug
 registry_debug = "mdns"

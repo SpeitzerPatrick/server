@@ -164,40 +164,61 @@ func NewAccountManager(ctx *cli.Context, g *Game) *AccountManager {
 }
 
 // todo get by userId???
+// getUser 方法用于根据用户ID获取用户信息
+// 如果缓存中存在用户信息，则直接返回；否则从数据库中获取
+// 如果数据库中也不存在，则创建一个新用户并保存到数据库
+// 参数:
+//   - userId: 用户ID
+//
+// 返回值:
+//   - *User: 用户对象指针
+//   - error: 错误信息
 func (am *AccountManager) getUser(userId int64) (*User, error) {
+	// 从缓存中尝试获取用户信息
 	u, ok := am.cacheUsers.Get(userId)
 	if ok {
 		return u.(*User), nil
 	}
 
+	// 从对象池中获取一个User对象
 	u = am.userPool.Get()
+	// 从数据库中查询用户信息
 	err := store.GetStore().FindOne(context.Background(), define.StoreType_User, userId, u)
 	if err == nil {
+		// 查询成功，将用户信息存入缓存并返回
 		am.cacheUsers.Set(userId, u, UserCacheExpire)
 		return u.(*User), nil
 	}
 
+	// 如果错误类型为"无结果"，说明用户不存在，需要创建新用户
 	if errors.Is(err, store.ErrNoResult) {
+		// 生成新的账户ID
 		accountId, err := utils.NextID(define.SnowFlake_Account)
 		if err != nil {
+			// 生成失败，将对象放回对象池并返回错误
 			am.userPool.Put(u)
 			return nil, err
 		}
 
+		// 设置用户信息
 		user := u.(*User)
 		user.UserID = userId
 		user.AccountID = accountId
 
+		// 将新用户信息保存到数据库
 		err = store.GetStore().UpdateOne(context.Background(), define.StoreType_User, user.UserID, user, true)
 		if !utils.ErrCheck(err, "UpdateOne failed when AccountManager.getUser", user) {
+			// 保存失败，将对象放回对象池并返回错误
 			am.userPool.Put(user)
 			return nil, err
 		}
 
+		// 保存成功，将用户信息存入缓存并返回
 		am.cacheUsers.Set(userId, user, UserCacheExpire)
 		return user, nil
 	}
 
+	// 其他错误情况，将对象放回对象池并返回错误
 	am.userPool.Put(u)
 	return nil, err
 }
@@ -425,82 +446,231 @@ func (am *AccountManager) startAccountTask(ctx context.Context, sock transport.S
 	})
 }
 
-func (am *AccountManager) Logon(ctx context.Context, userId int64, newSock transport.Socket) error {
-	// if accountId == -1 {
-	// 	return errors.New("AccountManager.addAccount failed: account id invalid!")
-	// }
+// LogonRequest encapsulates logon request parameters
+type LogonRequest struct {
+	UserID    int64
+	Socket    transport.Socket
+	Context   context.Context
+	Timestamp time.Time
+}
 
-	user, err := am.getUser(userId)
-	if !utils.ErrCheck(err, "getUser failed when AccountManager.Logon", userId) {
-		return err
+// LogonResult represents the result of a logon operation
+type LogonResult struct {
+	Account   *player.Account
+	IsNewUser bool
+	Error     error
+}
+
+// NewLogonRequest creates a new logon request
+func NewLogonRequest(ctx context.Context, userID int64, sock transport.Socket) *LogonRequest {
+	return &LogonRequest{
+		UserID:    userID,
+		Socket:    sock,
+		Context:   ctx,
+		Timestamp: time.Now(),
+	}
+}
+
+// Logon handles user login with improved error handling and logging
+func (am *AccountManager) Logon(ctx context.Context, userId int64, newSock transport.Socket) error {
+	request := NewLogonRequest(ctx, userId, newSock)
+	result := am.processLogon(request)
+
+	if result.Error != nil {
+		log.Error().
+			Err(result.Error).
+			Int64("user_id", userId).
+			Str("socket_remote", newSock.Remote()).
+			Msg("logon failed")
+		return result.Error
 	}
 
-	c, ok := am.cacheAccounts.Get(user.AccountID)
-	if ok {
-		// cache exist
-		acct := c.(*player.Account)
-		prevSock := acct.GetSock()
+	log.Info().
+		Int64("user_id", userId).
+		Int64("account_id", result.Account.Id).
+		Bool("is_new_user", result.IsNewUser).
+		Str("socket_remote", newSock.Remote()).
+		Msg("logon completed successfully")
 
-		// connect with new socket
-		if prevSock != newSock && prevSock != nil {
-			log.Info().
-				Caller().
-				Int64("account_id", acct.Id).
-				// Str("prev_socket_local", prevSock.Local()).
-				// Str("prev_socket_remote", prevSock.Remote()).
-				Str("new_sock_local", newSock.Local()).
-				Str("new_sock_remote", newSock.Remote()).
-				Msg("logon with new socket replacing prev socket")
+	return nil
+}
 
-			acct.TaskStop()
-		}
+// processLogon handles the core logon logic
+func (am *AccountManager) processLogon(request *LogonRequest) *LogonResult {
+	// Step 1: Validate and get user information
+	user, err := am.validateAndGetUser(request.UserID)
+	if err != nil {
+		return &LogonResult{Error: err}
+	}
 
-		// run new task
-		if !acct.IsTaskRunning() {
-			am.startAccountTask(ctx, newSock, acct, func() {
-				acct.LogonSucceed()
-			})
-		}
+	// Step 2: Check if account exists in cache
+	if cachedAccount := am.getCachedAccount(user.AccountID); cachedAccount != nil {
+		return am.handleExistingAccount(request, cachedAccount)
+	}
 
+	// Step 3: Create new account
+	return am.handleNewAccount(request, user)
+}
+
+// validateAndGetUser validates user ID and retrieves user information
+func (am *AccountManager) validateAndGetUser(userID int64) (*User, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("invalid user ID: %d", userID)
+	}
+
+	user, err := am.getUser(userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user %d: %w", userID, err)
+	}
+
+	if user == nil {
+		return nil, fmt.Errorf("user %d not found", userID)
+	}
+
+	return user, nil
+}
+
+// getCachedAccount retrieves account from cache
+func (am *AccountManager) getCachedAccount(accountID int64) *player.Account {
+	if cached, ok := am.cacheAccounts.Get(accountID); ok {
+		return cached.(*player.Account)
+	}
+	return nil
+}
+
+// handleExistingAccount processes logon for existing cached account
+func (am *AccountManager) handleExistingAccount(request *LogonRequest, account *player.Account) *LogonResult {
+	log.Debug().
+		Int64("account_id", account.Id).
+		Str("socket_remote", request.Socket.Remote()).
+		Msg("processing existing account logon")
+
+	// Handle socket replacement if necessary
+	if err := am.handleSocketReplacement(request, account); err != nil {
+		return &LogonResult{Error: fmt.Errorf("failed to handle socket replacement: %w", err)}
+	}
+
+	// Start account task if not running
+	if err := am.ensureAccountTaskRunning(request, account); err != nil {
+		return &LogonResult{Error: fmt.Errorf("failed to start account task: %w", err)}
+	}
+
+	return &LogonResult{
+		Account:   account,
+		IsNewUser: false,
+		Error:     nil,
+	}
+}
+
+// handleSocketReplacement manages socket replacement for existing accounts
+func (am *AccountManager) handleSocketReplacement(request *LogonRequest, account *player.Account) error {
+	prevSock := account.GetSock()
+
+	if prevSock != nil && prevSock != request.Socket {
 		log.Info().
-			Caller().
-			Int64("account_id", acct.Id).
-			Str("new_sock_local", newSock.Local()).
-			Str("new_sock_remote", newSock.Remote()).
-			Msg("logon with cache existed")
+			Int64("account_id", account.Id).
+			Str("prev_socket_remote", prevSock.Remote()).
+			Str("new_socket_remote", request.Socket.Remote()).
+			Msg("replacing existing socket connection")
 
-	} else {
-		// cache not exist, add a new account with socket
-		acct, err := am.newAccount(ctx, userId, user.AccountID, user.PlayerName, newSock)
-		if !utils.ErrCheck(err, "addNewAccount failed when AccountManager.Logon", userId, user.AccountID) {
-			return err
-		}
+		// Stop previous task gracefully
+		account.TaskStop()
 
-		am.cacheAccounts.Set(acct.GetId(), acct, AccountCacheExpire)
-
-		// account run
-		am.startAccountTask(ctx, newSock, acct, func() {
-			err := am.handleLoadPlayer(ctx, acct)
-
-			// 加载玩家成功或者账号下没有玩家
-			if err == nil || errors.Is(err, ErrAccountHasNoPlayer) {
-				acct.LogonSucceed()
-				return
-			}
-
-			// 加载失败
-			am.cacheAccounts.Delete(acct.GetId())
-		})
-
-		log.Info().
-			Int64("user_id", acct.UserId).
-			Int64("account_id", acct.Id).
-			Str("name", acct.GetName()).
-			Str("socket_remote", newSock.Remote()).
-			Msg("logon with cache not existed")
+		// Close previous socket
+		prevSock.Close()
 	}
 
 	return nil
+}
+
+// ensureAccountTaskRunning ensures the account task is running
+func (am *AccountManager) ensureAccountTaskRunning(request *LogonRequest, account *player.Account) error {
+	if !account.IsTaskRunning() {
+		am.startAccountTask(request.Context, request.Socket, account, func() {
+			account.LogonSucceed()
+			log.Debug().
+				Int64("account_id", account.Id).
+				Msg("existing account logon succeeded")
+		})
+	}
+	return nil
+}
+
+// handleNewAccount processes logon for new account
+func (am *AccountManager) handleNewAccount(request *LogonRequest, user *User) *LogonResult {
+	log.Debug().
+		Int64("user_id", request.UserID).
+		Int64("account_id", user.AccountID).
+		Str("socket_remote", request.Socket.Remote()).
+		Msg("creating new account")
+
+	// Create new account
+	account, err := am.createAndCacheAccount(request, user)
+	if err != nil {
+		return &LogonResult{Error: fmt.Errorf("failed to create account: %w", err)}
+	}
+
+	// Start account task with player loading
+	if err := am.startNewAccountTask(request, account); err != nil {
+		// Clean up on failure
+		am.cacheAccounts.Delete(account.GetId())
+		return &LogonResult{Error: fmt.Errorf("failed to start new account task: %w", err)}
+	}
+
+	return &LogonResult{
+		Account:   account,
+		IsNewUser: true,
+		Error:     nil,
+	}
+}
+
+// createAndCacheAccount creates a new account and adds it to cache
+func (am *AccountManager) createAndCacheAccount(request *LogonRequest, user *User) (*player.Account, error) {
+	account, err := am.newAccount(request.Context, request.UserID, user.AccountID, user.PlayerName, request.Socket)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new account for user %d: %w", request.UserID, err)
+	}
+
+	// Add to cache
+	am.cacheAccounts.Set(account.GetId(), account, AccountCacheExpire)
+
+	return account, nil
+}
+
+// startNewAccountTask starts task for new account with player loading
+func (am *AccountManager) startNewAccountTask(request *LogonRequest, account *player.Account) error {
+	am.startAccountTask(request.Context, request.Socket, account, func() {
+		if err := am.handlePlayerLoading(request.Context, account); err != nil {
+			log.Error().
+				Err(err).
+				Int64("account_id", account.Id).
+				Msg("failed to load player for new account")
+
+			// Clean up failed account
+			am.cacheAccounts.Delete(account.GetId())
+			return
+		}
+
+		account.LogonSucceed()
+		log.Debug().
+			Int64("account_id", account.Id).
+			Msg("new account logon succeeded")
+	})
+
+	return nil
+}
+
+// handlePlayerLoading handles player loading for new accounts
+func (am *AccountManager) handlePlayerLoading(ctx context.Context, account *player.Account) error {
+	err := am.handleLoadPlayer(ctx, account)
+
+	// Success or no player exists (both are acceptable)
+	if err == nil || errors.Is(err, ErrAccountHasNoPlayer) {
+		return nil
+	}
+
+	// Loading failed
+	return fmt.Errorf("failed to load player for account %d: %w", account.Id, err)
 }
 
 func (am *AccountManager) GetAccountIdBySock(sock transport.Socket) (int64, bool) {

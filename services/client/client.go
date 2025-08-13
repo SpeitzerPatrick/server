@@ -35,6 +35,7 @@ type Client struct {
 	cmder      *Commander
 	prompt     *PromptUI
 	chExec     chan ExecuteFunc
+	exitFunc   func(error) // Exit handler function
 
 	GateAddr string
 	wg       utils.WaitGroupWrapper
@@ -78,27 +79,67 @@ func (c *Client) Before(ctx *cli.Context) error {
 }
 
 func (c *Client) Action(ctx *cli.Context) error {
-	// log settings
+	// Initialize client configuration and logging
+	if err := c.initialize(ctx); err != nil {
+		return err
+	}
+
+	// Setup exit handling
+	exitCh := c.setupExitHandler()
+
+	// Initialize all client components
+	c.initializeComponents(ctx)
+
+	// Start all client services
+	c.startServices(ctx, exitCh)
+
+	// Wait for exit signal
+	return <-exitCh
+}
+
+// initialize sets up basic client configuration and logging
+func (c *Client) initialize(ctx *cli.Context) error {
+	// Configure logging
 	logLevel, err := zerolog.ParseLevel(ctx.String("log_level"))
 	if err != nil {
 		log.Fatal().Err(err).Send()
+		return err
 	}
-
 	log.Logger = log.Level(logLevel)
 
-	exitCh := make(chan error)
+	// Set client configuration
+	c.Id = ctx.Int64("client_id")
+	c.GateAddr = ctx.String("gate_addr")
+
+	log.Info().Int64("client_id", c.Id).Str("gate_addr", c.GateAddr).
+		Msg("client initialized")
+
+	return nil
+}
+
+// setupExitHandler creates the exit channel and handler function
+func (c *Client) setupExitHandler() chan error {
+	exitCh := make(chan error, 1)
 	var once sync.Once
-	exitFunc := func(err error) {
+
+	c.exitFunc = func(err error) {
 		once.Do(func() {
 			if err != nil {
-				log.Fatal().Err(err).Msg("Client Action() error")
+				log.Error().Err(err).Int64("client_id", c.Id).
+					Msg("client exiting with error")
+			} else {
+				log.Info().Int64("client_id", c.Id).Msg("client exiting normally")
 			}
 			exitCh <- err
 		})
 	}
 
-	c.Id = ctx.Int64("client_id")
-	c.GateAddr = ctx.String("gate_addr")
+	return exitCh
+}
+
+// initializeComponents creates all client components
+func (c *Client) initializeComponents(ctx *cli.Context) {
+	log.Debug().Int64("client_id", c.Id).Msg("initializing client components")
 
 	c.cmder = NewCommander(c)
 	c.prompt = NewPromptUI(ctx, c)
@@ -106,46 +147,21 @@ func (c *Client) Action(ctx *cli.Context) error {
 	c.msgHandler = NewMsgHandler(ctx, c)
 	c.player = NewPlayer(ctx, c)
 
+	// Initialize optional HTTP server
 	if ctx.Bool("open_gin") {
 		c.gin = NewGinServer(ctx)
+		log.Debug().Int64("client_id", c.Id).Msg("gin server initialized")
 	}
 
-	// prompt ui run
-	c.wg.Wrap(func() {
-		defer utils.CaptureException()
-		_ = c.prompt.Run(ctx)
-	})
+	log.Info().Int64("client_id", c.Id).Msg("all client components initialized")
+}
 
-	// transport client
-	c.wg.Wrap(func() {
-		defer utils.CaptureException()
-		err := c.transport.Run(ctx)
-		utils.ErrPrint(err, "transport client run failed")
-		c.transport.Exit(ctx)
-	})
-
-	// gin server
-	if ctx.Bool("open_gin") {
-		c.wg.Wrap(func() {
-			defer func() {
-				if err := recover(); err != nil {
-					stack := string(debug.Stack())
-					log.Error().Msgf("catch exception:%v, panic recovered with stack:%s", err, stack)
-				}
-
-				c.gin.Exit(ctx.Context)
-			}()
-			exitFunc(c.gin.Main(ctx))
-		})
-	}
-
-	// execute func
-	c.wg.Wrap(func() {
-		defer utils.CaptureException()
-		exitFunc(c.Execute(ctx))
-	})
-
-	return <-exitCh
+// startServices starts all client services in separate goroutines
+func (c *Client) startServices(ctx *cli.Context, exitCh chan error) {
+	c.startPromptUI(ctx)
+	c.startTransportClient(ctx)
+	c.startGinServer(ctx)
+	c.startExecutor(ctx)
 }
 
 func (c *Client) Run(arguments []string) error {
@@ -179,8 +195,79 @@ func (c *Client) Execute(ctx *cli.Context) error {
 	}
 }
 
+// startPromptUI starts the prompt UI service
+func (c *Client) startPromptUI(ctx *cli.Context) {
+	c.wg.Wrap(func() {
+		defer utils.CaptureException()
+
+		log.Debug().Int64("client_id", c.Id).Msg("starting prompt UI")
+		if err := c.prompt.Run(ctx); err != nil {
+			log.Warn().Err(err).Int64("client_id", c.Id).Msg("prompt UI exited with error")
+		}
+	})
+}
+
+// startTransportClient starts the transport client service
+func (c *Client) startTransportClient(ctx *cli.Context) {
+	c.wg.Wrap(func() {
+		defer func() {
+			utils.CaptureException()
+			c.transport.Exit(ctx)
+			log.Debug().Int64("client_id", c.Id).Msg("transport client cleanup completed")
+		}()
+
+		log.Debug().Int64("client_id", c.Id).Msg("starting transport client")
+		if err := c.transport.Run(ctx); err != nil {
+			log.Error().Err(err).Int64("client_id", c.Id).Msg("transport client failed")
+		}
+	})
+}
+
+// startGinServer starts the HTTP server if enabled
+func (c *Client) startGinServer(ctx *cli.Context) {
+	if !ctx.Bool("open_gin") || c.gin == nil {
+		return
+	}
+
+	c.wg.Wrap(func() {
+		defer func() {
+			if err := recover(); err != nil {
+				stack := string(debug.Stack())
+				log.Error().Int64("client_id", c.Id).
+					Msgf("gin server panic: %v, stack: %s", err, stack)
+			}
+
+			c.gin.Exit(ctx.Context)
+			log.Debug().Int64("client_id", c.Id).Msg("gin server cleanup completed")
+		}()
+
+		log.Debug().Int64("client_id", c.Id).Msg("starting gin server")
+		if err := c.gin.Main(ctx); err != nil {
+			log.Error().Err(err).Int64("client_id", c.Id).Msg("gin server failed")
+			c.exitFunc(err)
+		}
+	})
+}
+
+// startExecutor starts the main client executor
+func (c *Client) startExecutor(ctx *cli.Context) {
+	c.wg.Wrap(func() {
+		defer utils.CaptureException()
+
+		log.Debug().Int64("client_id", c.Id).Msg("starting client executor")
+		if err := c.Execute(ctx); err != nil {
+			log.Error().Err(err).Int64("client_id", c.Id).Msg("client executor failed")
+			c.exitFunc(err)
+		} else {
+			c.exitFunc(nil)
+		}
+	})
+}
+
 func (c *Client) Stop() {
+	log.Info().Int64("client_id", c.Id).Msg("stopping client")
 	c.wg.Wait()
+	log.Info().Int64("client_id", c.Id).Msg("client stopped")
 }
 
 func (c *Client) SendMessage(msg proto.Message) {
@@ -193,8 +280,8 @@ func (c *Client) WaitReturnedMsg(ctx context.Context, waitMsgNames string) bool 
 		return true
 	}
 
-	// default wait time
-	tm := time.NewTimer(time.Second * 3)
+	// default wait time - increased for better reliability
+	tm := time.NewTimer(time.Second * 10)
 	for {
 		select {
 		case <-ctx.Done():

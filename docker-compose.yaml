@@ -1,14 +1,38 @@
 # version字段已过时，移除以避免警告
 
 services:
-  #client_bots:
-    #image: hellodudu86/client_bots
-    #container_name: client_bots
-    #command: "-config_file=config/client_bots/config.toml"
-    #volumes:
-      #- "./config/client_bots/:/app/config/client_bots"
-      #- "./config/cert/:/app/config/cert"
-      #- "./config/entry/:/app/config/entry"
+#  client:
+#    image: server_client:latest
+#    container_name: client
+#    command: "-config_file=config/client/config.toml"
+#    volumes:
+#      - "./config/client/:/app/config/client"
+#      - "./config/cert/:/app/config/cert"
+#      - "./config/csv/:/app/config/csv"
+#    environment:
+#      TZ: "Asia/Shanghai"
+#      TERM: "xterm-256color"
+#    depends_on:
+#      - "gate"
+#    ports:
+#      - "8083:8083"
+#    stdin_open: true
+#    tty: true
+
+  client_bots:
+    image: client_bots:latest
+    container_name: client_bots
+    command: "-config_file=config/client_bots/config.toml"
+    volumes:
+      - "./config/client_bots/:/app/apps/client_bots/config/client_bots"
+      - "./config/cert/:/app/apps/client_bots/config/cert"
+      - "./config/csv/:/app/apps/client_bots/config/csv"
+    environment:
+      TZ: "Asia/Shanghai"
+    networks:
+      - server-network
+    depends_on:
+      - "gate"
   loki:
     image: grafana/loki:3.5.0
     container_name: loki
@@ -24,17 +48,18 @@ services:
 
   game:
     image: game:latest
-    container_name: game
-    # command: "-config_file=config/game/config.toml"
+    # 移除container_name，让Docker自动生成
+    command: ["/bin/bash", "/app/server/scripts/start-game.sh"]
     ports:
-      - "7030:7030"
-      - "8090:8090"
-      - "8445:8445"
-      - "4433:4433"
+      - "7030-7032:7030"  # 端口范围
+      - "8090-8092:8090"
+      - "8445-8447:8445"
+      - "4433-4435:4433"
     volumes:
       - "./config/game/:/app/server/config/game"
       - "./config/cert/:/app/server/config/cert"
       - "./config/csv/:/app/server/config/csv"
+      - "./scripts/:/app/server/scripts"
     environment:
       TZ: "Asia/Shanghai"
       MICRO_REGISTRY: "mdns"
@@ -43,10 +68,14 @@ services:
       # MICRO_BROKER_ADDRESS: "nsqd:4150"
       DB_DSN: "mongodb://mongo:27017"
       # REDIS_ADDR: "rejson:6379"
+      PUBLIC_IP: "game"
+      # 每个实例会有不同的MICRO_SERVER_ID
+    networks:
+      - server-network
     depends_on:
       # - "consul"
       # - "nsqd"
-      - "loki"
+      # - "loki"
       - "mongo"
     logging:
       driver: loki
@@ -59,7 +88,7 @@ services:
   gate:
     image: gate:latest
     container_name: gate
-    # command: "-config_file=config/gate/config.toml"
+    command: ["/app/server/apps/gate/gate", "--config_file", "config/gate/config.toml"]
     volumes:
       - "./config/gate/:/app/server/config/gate"
       - "./config/cert/:/app/server/config/cert"
@@ -67,7 +96,7 @@ services:
     ports:
       - "8081:8081"
       - "8443:8443"
-      - "7081:7080"
+      - "7080:7080"
     # 如果需要使用80/443端口，取消下面的注释
     # privileged: true
     environment:
@@ -79,11 +108,15 @@ services:
       # MICRO_SYNC_NODE_ADDRESS: "consul:8500"
       DB_DSN: "mongodb://mongo:27017"
       # REDIS_ADDR: "rejson:6379"
+      # GAME_SERVICE_ADDRESS: "game:7030"  # 注释掉，使用服务发现
     depends_on:
       # - "consul"
       # - "nsqd"
       - "loki"
       - "mongo"
+      - "game"
+    networks:
+      - server-network
     logging:
       driver: loki
       options:
@@ -199,6 +232,8 @@ services:
     volumes:
       - ./config/mongo/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
       - /home/speitzerlau/mongo-data:/data/db
+    networks:
+      - server-network
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 30s
@@ -331,10 +366,12 @@ services:
     image: grafana/grafana
     container_name: grafana
     volumes:
-        - ./config/grafana/grafana.ini:/etc/grafana/grafana.ini
+        # - ./config/grafana/grafana.ini:/etc/grafana/grafana.ini
         - ./data/grafana/:/var/lib/grafana/
     ports:
         - "3000:3000"
+    networks:
+        - server-network
     user: "472"
     environment:
       GF_EXPLORE_ENABLED: "true"
@@ -353,6 +390,8 @@ services:
         - "9090:9090"
     environment:
       TZ: "Asia/Shanghai"
+    networks:
+      - server-network
     command:
         - --config.file=/etc/prometheus/prometheus.yml
     volumes:
@@ -368,7 +407,11 @@ services:
     restart: always
     ports:
         - "9100:9100"
+    networks:
+      - server-network
     environment:
       TZ: "Asia/Shanghai"
 
-    
+networks:
+  server-network:
+    driver: bridge

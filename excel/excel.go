@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/360EntSecGroup-Skylar/excelize/v2"
 	"github.com/east-eden/server/define"
@@ -244,44 +245,225 @@ func Generate(readExcelPath, exportGoPath, exportCsvPath string) {
 	generateAllCodes(exportGoPath, fileNames)
 }
 
-// read all excel entries
+// ExcelReader handles the reading and loading of excel entries
+type ExcelReader struct {
+	dirPath   string
+	fileNames []string
+	stats     *LoadingStats
+}
+
+// LoadingStats tracks the loading statistics
+type LoadingStats struct {
+	TotalFiles     int
+	LoadedFiles    int
+	FailedFiles    int
+	TotalLoaders   int
+	SuccessLoaders int
+	FailedLoaders  int
+	StartTime      time.Time
+	EndTime        time.Time
+}
+
+// NewExcelReader creates a new ExcelReader instance
+func NewExcelReader(dirPath string) *ExcelReader {
+	return &ExcelReader{
+		dirPath: dirPath,
+		stats: &LoadingStats{
+			StartTime: time.Now(),
+		},
+	}
+}
+
+// ReadAllEntries reads and loads all excel entries with improved error handling and logging
 func ReadAllEntries(dirPath string) {
-	fileNames := getAllCsvFileNames(dirPath)
-	readCSV(dirPath, fileNames)
+	reader := NewExcelReader(dirPath)
+	reader.Execute()
+}
+
+// Execute performs the complete excel reading and loading process
+func (r *ExcelReader) Execute() {
+	log.Info().Str("dir_path", r.dirPath).Msg("starting excel entries reading process")
+
+	// Step 1: Discover CSV files
+	if err := r.discoverFiles(); err != nil {
+		log.Error().Err(err).Msg("failed to discover CSV files")
+		return
+	}
+
+	// Step 2: Read CSV files
+	if err := r.readCSVFiles(); err != nil {
+		log.Error().Err(err).Msg("failed to read CSV files")
+		return
+	}
+
+	// Step 3: Load entries using registered loaders
+	if err := r.loadEntries(); err != nil {
+		log.Error().Err(err).Msg("failed to load entries")
+		return
+	}
+
+	// Step 4: Load entries using manual loaders
+	if err := r.loadManualEntries(); err != nil {
+		log.Error().Err(err).Msg("failed to load manual entries")
+		return
+	}
+
+	r.stats.EndTime = time.Now()
+	r.logCompletionStats()
+}
+
+// discoverFiles discovers all CSV files in the directory
+func (r *ExcelReader) discoverFiles() error {
+	r.fileNames = getAllCsvFileNames(r.dirPath)
+	r.stats.TotalFiles = len(r.fileNames)
+
+	if r.stats.TotalFiles == 0 {
+		return fmt.Errorf("no CSV files found in directory: %s", r.dirPath)
+	}
+
+	log.Info().Int("file_count", r.stats.TotalFiles).Msg("discovered CSV files")
+	return nil
+}
+
+// readCSVFiles reads all discovered CSV files
+func (r *ExcelReader) readCSVFiles() error {
+	log.Info().Msg("reading CSV files...")
+
+	readCSV(r.dirPath, r.fileNames)
+	r.stats.LoadedFiles = len(excelFileRaws)
+
+	log.Info().
+		Int("loaded_files", r.stats.LoadedFiles).
+		Int("total_files", r.stats.TotalFiles).
+		Msg("CSV files reading completed")
+
+	return nil
+}
+
+// loadEntries loads entries using registered entry loaders
+func (r *ExcelReader) loadEntries() error {
+	log.Info().Msg("loading entries with registered loaders...")
 
 	wg := utils.WaitGroupWrapper{}
+	var mu sync.Mutex
 
-	// read from excel files
 	entryLoaders.Range(func(k, v any) bool {
 		entryName := k.(string)
 		loader := v.(EntryLoader)
+		r.stats.TotalLoaders++
 
 		wg.Wrap(func() {
 			defer utils.CaptureException(entryName)
-			err := loader.Load(excelFileRaws[entryName])
-			utils.ErrPrint(err, "EntryLoader Load failed", entryName)
+
+			if err := r.loadSingleEntry(entryName, loader); err != nil {
+				mu.Lock()
+				r.stats.FailedLoaders++
+				mu.Unlock()
+				log.Error().Err(err).Str("entry_name", entryName).Msg("entry loader failed")
+			} else {
+				mu.Lock()
+				r.stats.SuccessLoaders++
+				mu.Unlock()
+				log.Debug().Str("entry_name", entryName).Msg("entry loader succeeded")
+			}
 		})
 
 		return true
 	})
 	wg.Wait()
 
-	// load by manual
+	log.Info().
+		Int("success_loaders", r.stats.SuccessLoaders).
+		Int("failed_loaders", r.stats.FailedLoaders).
+		Msg("entry loaders completed")
+
+	return nil
+}
+
+// loadManualEntries loads entries using manual entry loaders
+func (r *ExcelReader) loadManualEntries() error {
+	log.Info().Msg("loading entries with manual loaders...")
+
+	wg := utils.WaitGroupWrapper{}
+	var mu sync.Mutex
+	manualLoaderCount := 0
+	successManualLoaders := 0
+	failedManualLoaders := 0
+
 	entryManualLoaders.Range(func(k, v any) bool {
 		entryName := k.(string)
 		loader := v.(EntryManualLoader)
+		manualLoaderCount++
 
 		wg.Wrap(func() {
 			defer utils.CaptureException(entryName)
-			err := loader.ManualLoad(excelFileRaws[entryName])
-			utils.ErrPrint(err, "EntryManualLoader Load failed", entryName)
+
+			if err := r.loadSingleManualEntry(entryName, loader); err != nil {
+				mu.Lock()
+				failedManualLoaders++
+				mu.Unlock()
+				log.Error().Err(err).Str("entry_name", entryName).Msg("manual entry loader failed")
+			} else {
+				mu.Lock()
+				successManualLoaders++
+				mu.Unlock()
+				log.Debug().Str("entry_name", entryName).Msg("manual entry loader succeeded")
+			}
 		})
 
 		return true
 	})
 	wg.Wait()
 
-	log.Info().Msg("all excel entries reading completed!")
+	log.Info().
+		Int("success_manual_loaders", successManualLoaders).
+		Int("failed_manual_loaders", failedManualLoaders).
+		Int("total_manual_loaders", manualLoaderCount).
+		Msg("manual entry loaders completed")
+
+	return nil
+}
+
+// loadSingleEntry loads a single entry using the provided loader
+func (r *ExcelReader) loadSingleEntry(entryName string, loader EntryLoader) error {
+	fileRaw, exists := excelFileRaws[entryName]
+	if !exists {
+		return fmt.Errorf("excel file raw data not found for entry: %s", entryName)
+	}
+
+	if fileRaw == nil {
+		return fmt.Errorf("excel file raw data is nil for entry: %s", entryName)
+	}
+
+	return loader.Load(fileRaw)
+}
+
+// loadSingleManualEntry loads a single entry using the provided manual loader
+func (r *ExcelReader) loadSingleManualEntry(entryName string, loader EntryManualLoader) error {
+	fileRaw, exists := excelFileRaws[entryName]
+	if !exists {
+		return fmt.Errorf("excel file raw data not found for manual entry: %s", entryName)
+	}
+
+	if fileRaw == nil {
+		return fmt.Errorf("excel file raw data is nil for manual entry: %s", entryName)
+	}
+
+	return loader.ManualLoad(fileRaw)
+}
+
+// logCompletionStats logs the completion statistics
+func (r *ExcelReader) logCompletionStats() {
+	duration := r.stats.EndTime.Sub(r.stats.StartTime)
+
+	log.Info().
+		Str("duration", duration.String()).
+		Int("total_files", r.stats.TotalFiles).
+		Int("loaded_files", r.stats.LoadedFiles).
+		Int("total_loaders", r.stats.TotalLoaders).
+		Int("success_loaders", r.stats.SuccessLoaders).
+		Int("failed_loaders", r.stats.FailedLoaders).
+		Msg("all excel entries reading completed!")
 }
 
 func parseExcelData(rows [][]string, fileRaw *ExcelFileRaw) {
