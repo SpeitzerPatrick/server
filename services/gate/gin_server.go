@@ -44,10 +44,12 @@ var (
 )
 
 type GinServer struct {
-	g         *Gate
-	router    *gin.Engine
-	tlsRouter *gin.Engine
-	wg        utils.WaitGroupWrapper
+	g          *Gate
+	router     *gin.Engine
+	tlsRouter  *gin.Engine
+	wg         utils.WaitGroupWrapper
+	httpServer *http.Server
+	tlsServer  *http.Server
 }
 
 // wrap http.HandlerFunc to gin.HandlerFunc
@@ -290,14 +292,14 @@ func (s *GinServer) Main(ctx *cli.Context) error {
 			keyPath = ctx.String("key_path_debug")
 		}
 
-		server := &http.Server{
+		s.tlsServer = &http.Server{
 			Addr:         ctx.String("https_listen_addr"),
 			Handler:      s.tlsRouter,
 			ReadTimeout:  httpReadTimeout,
 			WriteTimeout: httpWriteTimeout,
 		}
 
-		if err := server.ListenAndServeTLS(certPath, keyPath); err != nil {
+		if err := s.tlsServer.ListenAndServeTLS(certPath, keyPath); err != nil && err != http.ErrServerClosed {
 			log.Error().
 				Err(err).
 				Msg("GinServer RunTLS failed")
@@ -309,14 +311,14 @@ func (s *GinServer) Main(ctx *cli.Context) error {
 	go func() {
 		defer utils.CaptureException()
 
-		server := &http.Server{
+		s.httpServer = &http.Server{
 			Addr:         ctx.String("http_listen_addr"),
 			Handler:      s.router,
 			ReadTimeout:  httpReadTimeout,
 			WriteTimeout: httpWriteTimeout,
 		}
 
-		if err := server.ListenAndServe(); err != nil {
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error().
 				Err(err).
 				Msg("GinServer Run failed")
@@ -334,6 +336,30 @@ func (s *GinServer) Run(ctx *cli.Context) error {
 }
 
 func (s *GinServer) Exit(ctx context.Context) {
+	log.Info().Msg("gin server shutting down...")
+
+	// 创建一个带超时的context用于优雅关闭
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 优雅关闭HTTP服务器
+	if s.httpServer != nil {
+		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Warn().Err(err).Msg("HTTP server forced to shutdown")
+		} else {
+			log.Info().Msg("HTTP server shutdown gracefully")
+		}
+	}
+
+	// 优雅关闭HTTPS服务器
+	if s.tlsServer != nil {
+		if err := s.tlsServer.Shutdown(shutdownCtx); err != nil {
+			log.Warn().Err(err).Msg("HTTPS server forced to shutdown")
+		} else {
+			log.Info().Msg("HTTPS server shutdown gracefully")
+		}
+	}
+
 	s.wg.Wait()
 	log.Info().Msg("gin server exit...")
 }

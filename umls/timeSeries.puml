@@ -36,7 +36,7 @@ Gate -> ClientBot: 【透明转发响应】\n通过io.Copy转发响应给客户�
 
 == 后续通信阶段 ==
 note over ClientBot, Game: 后续所有消息都通过Gate进行透明转发\nGate作为TCP代理，不解析具体业务消息
-ClientBot <-> Gate: 【透明双向转发】
+ClientBot <-> Gate: 【透明双向转发：直接通过io.Copy转发到Game服务器】
 Gate <-> Game: 【透明双向转发】
 
 @enduml

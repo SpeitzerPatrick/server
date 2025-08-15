@@ -11,7 +11,7 @@ account_connect_max = 8000
 public_ip = "game"
 tcp_listen_addr = ":7030"
 websocket_listen_addr = ":8445"
-http_listen_addr = ":8090"
+http_listen_addr = ":8091"
 https_listen_addr = ":4433"
 
 # rate limit 服务器每秒可受理最多4000次rpc调用

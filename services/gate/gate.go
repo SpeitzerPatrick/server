@@ -160,8 +160,24 @@ func (g *Gate) Run(arguments []string) error {
 }
 
 func (g *Gate) Stop() {
+	log.Info().Msg("gate service stopping...")
+
+	// 优雅关闭各个组件
+	if g.tg != nil {
+		g.tg.Exit()
+	}
+
+	if g.gin != nil {
+		g.gin.Exit(context.Background())
+	}
+
+	if g.gs != nil {
+		g.gs.Exit(context.Background())
+	}
+
 	g.wg.Wait()
 	store.GetStore().Exit()
+	log.Info().Msg("gate service stopped")
 }
 
 func (g *Gate) GateResult() error {

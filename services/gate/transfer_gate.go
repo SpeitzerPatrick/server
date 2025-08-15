@@ -96,7 +96,28 @@ func (tg *TransferGate) Run(ctx *cli.Context) error {
 }
 
 func (tg *TransferGate) Exit() {
-	tg.wg.Wait()
+	log.Info().Msg("transfer gate shutting down...")
+
+	// 关闭连接池，不再接受新连接
+	if tg.pool != nil {
+		tg.pool.Release()
+		log.Info().Msg("connection pool released")
+	}
+
+	// 等待所有连接处理完成，最多等待5秒
+	done := make(chan struct{})
+	go func() {
+		tg.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Info().Msg("all connections closed gracefully")
+	case <-time.After(5 * time.Second):
+		log.Warn().Msg("force closing transfer gate after timeout")
+	}
+
 	log.Info().Msg("transfer gate exit...")
 }
 

@@ -388,7 +388,7 @@ func (am *AccountManager) newAccount(ctx context.Context, userId int64, accountI
 	}
 
 	// prometheus ops
-	// prom.OpsOnlineAccountGauge.Set(float64(am.cacheAccounts.ItemCount()))
+	prom.OpsOnlineAccountGauge.Set(float64(am.cacheAccounts.ItemCount()))
 	prom.OpsLogonAccountCounter.Inc()
 
 	return acct, nil
@@ -736,76 +736,224 @@ func (am *AccountManager) AddPlayerTask(ctx context.Context, playerId int64, fn 
 	return am.AddAccountTask(ctx, info.AccountID, fn, p...)
 }
 
+// CreatePlayerRequest encapsulates player creation parameters
+type CreatePlayerRequest struct {
+	Account   *player.Account
+	Name      string
+	Context   context.Context
+	Timestamp time.Time
+}
+
+// CreatePlayerResult represents the result of player creation
+type CreatePlayerResult struct {
+	Player *player.Player
+	Error  error
+}
+
+// NewCreatePlayerRequest creates a new player creation request
+func NewCreatePlayerRequest(ctx context.Context, account *player.Account, name string) *CreatePlayerRequest {
+	return &CreatePlayerRequest{
+		Account:   account,
+		Name:      name,
+		Context:   ctx,
+		Timestamp: time.Now(),
+	}
+}
+
+// CreatePlayer creates a new player for the given account with improved error handling
 func (am *AccountManager) CreatePlayer(acct *player.Account, name string) (*player.Player, error) {
-	// only can create one player
-	if pl := acct.GetPlayer(); pl != nil {
-		return nil, player.ErrCreateMoreThanOnePlayer
+	request := NewCreatePlayerRequest(context.Background(), acct, name)
+	result := am.processPlayerCreation(request)
+
+	if result.Error != nil {
+		log.Error().
+			Err(result.Error).
+			Int64("account_id", acct.Id).
+			Str("player_name", name).
+			Msg("player creation failed")
+		return nil, result.Error
 	}
 
+	log.Info().
+		Int64("account_id", acct.Id).
+		Int64("player_id", result.Player.ID).
+		Str("player_name", name).
+		Msg("player created successfully")
+
+	return result.Player, nil
+}
+
+// processPlayerCreation handles the core player creation logic
+func (am *AccountManager) processPlayerCreation(request *CreatePlayerRequest) *CreatePlayerResult {
+	// Step 1: Validate creation constraints
+	if err := am.validatePlayerCreation(request.Account); err != nil {
+		return &CreatePlayerResult{Error: err}
+	}
+
+	// Step 2: Generate unique player ID
+	playerID, err := am.generatePlayerID()
+	if err != nil {
+		return &CreatePlayerResult{Error: fmt.Errorf("failed to generate player ID: %w", err)}
+	}
+
+	// Step 3: Create and initialize player object
+	player, err := am.createPlayerObject(request, playerID)
+	if err != nil {
+		return &CreatePlayerResult{Error: fmt.Errorf("failed to create player object: %w", err)}
+	}
+
+	// Step 4: Save player data to database
+	if err := am.savePlayerData(request.Context, player); err != nil {
+		// Clean up on failure
+		am.playerPool.Put(player)
+		return &CreatePlayerResult{Error: fmt.Errorf("failed to save player data: %w", err)}
+	}
+
+	// Step 5: Update account with player information
+	if err := am.linkPlayerToAccount(request.Context, request.Account, player); err != nil {
+		log.Warn().
+			Int64("account_id", request.Account.Id).
+			Int64("player_id", player.ID).
+			Err(err).
+			Msg("failed to update account, but player was created successfully")
+	}
+
+	// Step 6: Initialize player for first login
+	am.initializeNewPlayer(player)
+
+	return &CreatePlayerResult{Player: player, Error: nil}
+}
+
+// validatePlayerCreation checks if player creation is allowed
+func (am *AccountManager) validatePlayerCreation(account *player.Account) error {
+	if account == nil {
+		return fmt.Errorf("account cannot be nil")
+	}
+
+	// Only allow one player per account
+	if existingPlayer := account.GetPlayer(); existingPlayer != nil {
+		return player.ErrCreateMoreThanOnePlayer
+	}
+
+	return nil
+}
+
+// generatePlayerID creates a unique player ID
+func (am *AccountManager) generatePlayerID() (int64, error) {
 	id, err := utils.NextID(define.SnowFlake_Player)
 	if err != nil {
-		return nil, err
+		return 0, fmt.Errorf("snowflake ID generation failed: %w", err)
+	}
+	return id, nil
+}
+
+// createPlayerObject initializes a new player object
+func (am *AccountManager) createPlayerObject(request *CreatePlayerRequest, playerID int64) (*player.Player, error) {
+	// Get player object from pool
+	p := am.playerPool.Get().(*player.Player)
+
+	// Initialize player
+	p.Init(playerID)
+	p.AccountID = request.Account.Id
+	p.SetAccount(request.Account)
+	p.SetName(request.Name)
+
+	log.Debug().
+		Int64("player_id", playerID).
+		Int64("account_id", request.Account.Id).
+		Str("name", request.Name).
+		Msg("player object created")
+
+	return p, nil
+}
+
+// savePlayerData persists player data to database
+func (am *AccountManager) savePlayerData(ctx context.Context, player *player.Player) error {
+	// Define all save operations
+	saveOperations := []struct {
+		name string
+		fn   func() error
+	}{
+		{
+			name: "player_basic_info",
+			fn: func() error {
+				return store.GetStore().UpdateOne(ctx, define.StoreType_Player, player.ID, player)
+			},
+		},
+		{
+			name: "player_tokens",
+			fn: func() error {
+				return store.GetStore().UpdateOne(ctx, define.StoreType_Token, player.ID, player.TokenManager())
+			},
+		},
+		{
+			name: "player_fragments",
+			fn: func() error {
+				return store.GetStore().UpdateOne(ctx, define.StoreType_Fragment, player.ID, player.FragmentManager())
+			},
+		},
+		// TODO: Uncomment when ready
+		// {
+		//     name: "player_heroes",
+		//     fn: func() error {
+		//         return store.GetStore().UpdateOne(ctx, define.StoreType_Hero, player.ID, player.HeroManager())
+		//     },
+		// },
+		// {
+		//     name: "player_items",
+		//     fn: func() error {
+		//         return store.GetStore().UpdateOne(ctx, define.StoreType_Item, player.ID, player.ItemManager())
+		//     },
+		// },
 	}
 
-	p := am.playerPool.Get().(*player.Player)
-	p.Init(id)
-	p.AccountID = acct.Id
-	p.SetAccount(acct)
-	p.SetName(name)
-
-	// save handle
-	errHandle := func(f func() error) {
-		if err != nil {
-			return
+	// Execute all save operations
+	for _, op := range saveOperations {
+		if err := op.fn(); err != nil {
+			return fmt.Errorf("failed to save %s for player %d: %w", op.name, player.ID, err)
 		}
 
-		err = f()
-	}
-	errHandle(func() error {
-		return store.GetStore().UpdateOne(context.Background(), define.StoreType_Player, p.ID, p)
-	})
-
-	// errHandle(func() error {
-	// 	return store.GetStore().UpdateOne(context.Background(), define.StoreType_Hero, p.ID, p.HeroManager())
-	// })
-
-	// errHandle(func() error {
-	// 	return store.GetStore().UpdateOne(context.Background(), define.StoreType_Item, p.ID, p.ItemManager())
-	// })
-
-	errHandle(func() error {
-		return store.GetStore().UpdateOne(context.Background(), define.StoreType_Token, p.ID, p.TokenManager())
-	})
-
-	errHandle(func() error {
-		return store.GetStore().UpdateOne(context.Background(), define.StoreType_Fragment, p.ID, p.FragmentManager())
-	})
-
-	// 保存失败处理
-	if !utils.ErrCheck(err, "save player failed when CreatePlayer", id, name) {
-		am.playerPool.Put(p)
-		return nil, err
+		log.Debug().
+			Int64("player_id", player.ID).
+			Str("operation", op.name).
+			Msg("player data saved successfully")
 	}
 
-	acct.SetPlayer(p)
-	acct.Name = name
-	acct.Level = p.GetLevel()
-	acct.AddPlayerID(p.GetId())
-	if err := store.GetStore().UpdateOne(context.Background(), define.StoreType_Account, acct.Id, acct, true); err != nil {
-		log.Warn().
-			Int64("account_id", acct.Id).
-			Int64("user_id", acct.UserId).
-			Err(err).
-			Msg("save account failed")
+	return nil
+}
+
+// linkPlayerToAccount updates account with player information
+func (am *AccountManager) linkPlayerToAccount(ctx context.Context, account *player.Account, player *player.Player) error {
+	// Update account with player information
+	account.SetPlayer(player)
+	account.Name = player.GetName()
+	account.Level = player.GetLevel()
+	account.AddPlayerID(player.GetId())
+
+	// Save updated account
+	if err := store.GetStore().UpdateOne(ctx, define.StoreType_Account, account.Id, account, true); err != nil {
+		return fmt.Errorf("failed to update account %d: %w", account.Id, err)
 	}
 
-	// 第一次上线处理
-	p.OnFirstLogon()
+	log.Debug().
+		Int64("account_id", account.Id).
+		Int64("player_id", player.ID).
+		Msg("player linked to account successfully")
 
-	// 同步玩家初始信息
-	p.SendInitInfo()
+	return nil
+}
 
-	return p, err
+// initializeNewPlayer performs first-time player initialization
+func (am *AccountManager) initializeNewPlayer(player *player.Player) {
+	// First login processing
+	player.OnFirstLogon()
+
+	// Send initial player information to client
+	player.SendInitInfo()
+
+	log.Debug().
+		Int64("player_id", player.ID).
+		Msg("new player initialized")
 }
 
 func (am *AccountManager) Broadcast(msg proto.Message) {

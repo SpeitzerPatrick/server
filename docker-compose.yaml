@@ -48,13 +48,13 @@ services:
 
   game:
     image: game:latest
-    # 移除container_name，让Docker自动生成
-    command: ["/bin/bash", "/app/server/scripts/start-game.sh"]
+    container_name: game
+    command: ["/app/server/apps/game/game", "--config_file", "config/game/config.toml"]
     ports:
-      - "7030-7032:7030"  # 端口范围
-      - "8090-8092:8090"
-      - "8445-8447:8445"
-      - "4433-4435:4433"
+      - "7030:7030"
+      - "8091:8091"
+      - "8445:8445"
+      - "4433:4433"
     volumes:
       - "./config/game/:/app/server/config/game"
       - "./config/cert/:/app/server/config/cert"
@@ -63,20 +63,14 @@ services:
     environment:
       TZ: "Asia/Shanghai"
       MICRO_REGISTRY: "mdns"
-      # MICRO_REGISTRY_ADDRESS: "consul:8500"
-      # MICRO_BROKER: "nsq"
-      # MICRO_BROKER_ADDRESS: "nsqd:4150"
       DB_DSN: "mongodb://mongo:27017"
-      # REDIS_ADDR: "rejson:6379"
       PUBLIC_IP: "game"
-      # 每个实例会有不同的MICRO_SERVER_ID
     networks:
       - server-network
     depends_on:
-      # - "consul"
-      # - "nsqd"
-      # - "loki"
       - "mongo"
+    stop_grace_period: 10s
+    stop_signal: SIGTERM
     logging:
       driver: loki
       options:
@@ -117,6 +111,8 @@ services:
       - "game"
     networks:
       - server-network
+    stop_grace_period: 10s
+    stop_signal: SIGTERM
     logging:
       driver: loki
       options:
@@ -247,6 +243,32 @@ services:
     #     loki-retries: "5"
     #     loki-batch-size: "400"
 
+  mongodb-exporter:
+    image: percona/mongodb_exporter:0.44.0
+    container_name: mongodb-exporter
+    restart: unless-stopped
+    ports:
+      - "9216:9216"
+    environment:
+      TZ: "Asia/Shanghai"
+      MONGODB_URI: "mongodb://exporter:exporter_pass@mongo:27017/admin?directConnection=true"
+      MONGODB_COLLECT_ALL: "true"
+      MONGODB_COLLECT_DATABASE: "true"
+      MONGODB_COLLECT_COLLECTION: "true"
+      MONGODB_COLLECT_TOPMETRICS: "true"
+      MONGODB_COLLECT_INDEXUSAGE: "true"
+      MONGODB_COLLECT_CONNPOOLSTATS: "true"
+    depends_on:
+      - mongo
+    networks:
+      - server-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9216/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   # rejson:
   #   image: redislabs/rejson
   #   command: 
@@ -372,6 +394,8 @@ services:
         - "3000:3000"
     networks:
         - server-network
+    extra_hosts:
+        - "host.docker.internal:host-gateway"
     user: "472"
     environment:
       GF_EXPLORE_ENABLED: "true"
@@ -384,19 +408,16 @@ services:
         loki-batch-size: "400"
 
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:latest
     container_name: prometheus
     ports:
-        - "9090:9090"
-    environment:
-      TZ: "Asia/Shanghai"
-    networks:
-      - server-network
-    command:
-        - --config.file=/etc/prometheus/prometheus.yml
+        - "0.0.0.0:9090:9090"  # 绑定到所有网络接口
     volumes:
         - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-        - ./data/prometheus:/prometheus
+    networks:
+      - server-network
+    environment:
+      TZ: "Asia/Shanghai"
 
   node-exporter:
     image: quay.io/prometheus/node-exporter

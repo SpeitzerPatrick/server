@@ -10,6 +10,7 @@ import (
 	"github.com/east-eden/server/excel/auto"
 	pbGlobal "github.com/east-eden/server/proto/global"
 	"github.com/east-eden/server/services/game/item"
+	"github.com/east-eden/server/services/game/prom"
 	"github.com/east-eden/server/store"
 	"github.com/east-eden/server/utils"
 	"github.com/east-eden/server/utils/random"
@@ -488,6 +489,9 @@ func (m *ItemManager) CrystalBulkRandom(num int32) error {
 
 		err := store.GetStore().UpdateOne(context.Background(), define.StoreType_Item, crystal.Id, crystal)
 		utils.ErrPrint(err, "UpdateOne failed when CrystalBulkRandom", it.Opts().TypeId, m.owner.ID)
+
+		// prometheus ops
+		prom.OpsCreateItemCounter.Inc()
 	}
 	log.Info().Int32("num", num).Msg("CrystalBulkRandom success")
 

@@ -287,9 +287,15 @@ func (e *clientExecutor) run() {
 		return
 	}
 
-	// Continuous game operations
+	// Continuous game operations - 压测模式：快速连续添加物品
 	for e.err == nil {
+		// 连续执行多次添加操作进行压测
 		e.addExecute(AddItemExecution)
+		e.addExecute(AddItemExecution)
+		e.addExecute(AddItemExecution)
+
+		// 短暂休息避免过度压测
+		time.Sleep(time.Millisecond * 10)
 	}
 
 	log.Info().Int64("client_id", e.clientID).Err(e.err).
@@ -332,7 +338,7 @@ func (c *ClientBots) AddClientExecute(ctx context.Context, id int64, fn ExecuteF
 	default:
 	}
 
-	time.Sleep(time.Millisecond * 500)
+	time.Sleep(time.Millisecond * 50) // 减少到50ms，提高频率
 
 	c.RLock()
 	defer c.RUnlock()
@@ -596,13 +602,20 @@ type GMCommandHandler struct {
 	ctx    context.Context
 }
 
-// ExecuteAddItem executes the add item GM command
+// ExecuteAddItem executes the add item GM command with stress testing
 func (h *GMCommandHandler) ExecuteAddItem() error {
-	const command = "gm item add 6"
+	// 随机选择物品类型和数量进行压测
+	itemTypes := []int{6, 7, 8, 9, 10, 11, 12} // 多种物品类型
+	quantities := []int{1, 5, 10, 20, 50}      // 不同数量
 
-	log.Info().Int64("client_id", h.client.Id).
-		Str("command", command).
-		Msg("executing GM add item command")
+	itemType := itemTypes[h.client.Id%int64(len(itemTypes))]
+	quantity := quantities[h.client.Id%int64(len(quantities))]
+
+	command := fmt.Sprintf("gm item add %d %d", itemType, quantity)
+
+	log.Debug().Int64("client_id", h.client.Id). // 改为Debug减少日志量
+							Str("command", command).
+							Msg("executing stress test GM add item command")
 
 	// Step 1: Create GM command message
 	message := h.createGMCommandMessage(command)
@@ -612,14 +625,14 @@ func (h *GMCommandHandler) ExecuteAddItem() error {
 		return fmt.Errorf("failed to send GM command: %w", err)
 	}
 
-	// Step 3: Wait for command response
-	if err := h.waitForGMResponse(); err != nil {
+	// Step 3: Wait for command response (减少等待时间)
+	if err := h.waitForGMResponseFast(); err != nil {
 		return fmt.Errorf("failed to receive GM command response: %w", err)
 	}
 
-	log.Info().Int64("client_id", h.client.Id).
-		Str("command", command).
-		Msg("GM add item command completed successfully")
+	log.Debug().Int64("client_id", h.client.Id). // 改为Debug减少日志量
+							Str("command", command).
+							Msg("stress test GM add item command completed")
 
 	return nil
 }
@@ -666,6 +679,23 @@ func (h *GMCommandHandler) waitForGMResponse() error {
 	log.Debug().Int64("client_id", h.client.Id).
 		Str("received_message", expectedResponse).
 		Msg("GM command response received successfully")
+
+	return nil
+}
+
+// waitForGMResponseFast waits for GM response with shorter timeout for stress testing
+func (h *GMCommandHandler) waitForGMResponseFast() error {
+	const expectedResponse = "S2C_ServerConsole"
+
+	// 使用更短的超时时间进行压测
+	ctx, cancel := context.WithTimeout(h.ctx, time.Millisecond*200)
+	defer cancel()
+
+	success := h.client.WaitReturnedMsg(ctx, expectedResponse)
+	if !success {
+		// 压测时不记录超时警告，避免日志过多
+		return errors.New("timeout waiting for GM command response")
+	}
 
 	return nil
 }

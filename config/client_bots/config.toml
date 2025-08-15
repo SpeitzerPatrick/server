@@ -17,7 +17,7 @@ key_path_debug = "config/cert/localhost.key"
 cert_path_release = "config/cert/hellodudu.crt"
 key_path_release = "config/cert/hellodudu.key"
 
-client_bots_num = 500
+client_bots_num = 100  # 减少到100个，避免过度压测
 
 # http
 http_listen_addr = ":8083"

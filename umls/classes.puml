@@ -65,4 +65,141 @@ TransportClient --> transport.Socket
 TransportClient --> time.Ticker
 TransportClient --> proto.Message
 
+' Player System Classes
+class PlayerInfo {
+  + ID : int64
+  + AccountID : int64
+  + Name : string
+  + Exp : int32
+  + Level : int32
+  + VipExp : int32
+  + VipLevel : int32
+  + BuyStrengthenTimes : int16
+  + BattleArray : []int64
+  --
+  + Init() : void
+  + GenInfoPB() : *pbGlobal.PlayerInfo
+}
+
+class Player {
+  + PlayerInfo : PlayerInfo (inline)
+  + ChapterStageManager : *ChapterStageManager (inline)
+  + QuestManager : *quest.QuestManager (inline)
+  + GuideManager : *GuideManager (inline)
+  + TowerManager : *TowerManager (inline)
+  --
+  - acct : *Account
+  - itemManager : *ItemManager
+  - heroManager : *HeroManager
+  - tokenManager : *TokenManager
+  - collectionManager : *CollectionManager
+  - fragmentManager : *FragmentManager
+  - costLootManager : *costloot.CostLootManager
+  - conditionManager : *ConditionManager
+  - mailController : *MailController
+  - eventManager : *event.EventManager
+  --
+  - lastUpdateTime : time.Time
+  - initComplete : bool
+  --
+  + Init(playerId int64) : void
+  + AfterLoad() : error
+  + SetAccount(acct *Account) : void
+  + OnFirstLogon() : void
+  + SendInitInfo() : void
+  + ChangeExp(add int32) : void
+  + BuyStrengthen() : error
+  + SendProtoMessage(m proto.Message) : void
+  --
+  + HeroManager() : *HeroManager
+  + ItemManager() : *ItemManager
+  + TokenManager() : *TokenManager
+  + FragmentManager() : *FragmentManager
+  + CostLootManager() : *costloot.CostLootManager
+  + EventManager() : *event.EventManager
+}
+
+class Account {
+  + Id : int64
+  + UserId : int64
+  + GameId : int16
+  + Name : string
+  + Level : int32
+  + Privilege : int8
+  + PlayerIDs : []int64
+  + LastLogoffTime : int32
+  --
+  - sock : transport.Socket
+  - p : *Player
+  - tasker : *task.Tasker
+  - rpcCaller : iface.RpcCaller
+  --
+  + Init() : void
+  + InitTask(startFn, stopFn) : void
+  + GetId() : int64
+  + SetPlayer(p *Player) : void
+  + GetPlayer() : *Player
+  + SendProtoMessage(p proto.Message) : void
+}
+
+class TokenManager {
+  + NextStrengthRegenTime : int32
+  + Tokens : [define.Token_End]int32
+  --
+  - owner : *Player
+  --
+  + LoadAll() : error
+  + GetToken(tp int32) : (int32, error)
+  + TokenSet(tp int32, value int32) : error
+  + GainLoot(typeMisc int32, num int32) : error
+  + DoCost(typeMisc int32, num int32) : error
+  + GenTokenListPB() : []*pbGlobal.Token
+  + SendTokenUpdate(tp, value int32) : void
+}
+
+class FragmentManager {
+  + HeroFragmentManager : *HeroFragmentManager (inline)
+  + CollectionFragmentManager : *CollectionFragmentManager (inline)
+  --
+  - owner : *Player
+  --
+  + LoadAll() : error
+}
+
+class HeroManager {
+  - owner : *Player
+  - HeroList : map[int64]*hero.Hero
+  - heroTypeSet : map[int32]struct{}
+  --
+  + LoadAll() : error
+  + AfterLoad() : void
+  + GainLoot(typeMisc int32, num int32) : error
+  + GenHeroListPB() : []*pbGlobal.Hero
+}
+
+class ItemManager {
+  - owner : *Player
+  --
+  + LoadAll() : error
+  + GenItemListPB() : []*pbGlobal.Item
+  + GenEquipListPB() : []*pbGlobal.Equip
+  + GenCrystalListPB() : []*pbGlobal.Crystal
+}
+
+' Relationships
+Player --> PlayerInfo : contains
+Player --> Account : acct
+Player --> TokenManager : tokenManager
+Player --> FragmentManager : fragmentManager
+Player --> HeroManager : heroManager
+Player --> ItemManager : itemManager
+
+Account --> Player : p
+Account --> transport.Socket : sock
+
+TokenManager --> Player : owner
+FragmentManager --> Player : owner
+HeroManager --> Player : owner
+ItemManager --> Player : owner
+
 @enduml
