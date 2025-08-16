@@ -71,12 +71,12 @@ services:
       - "mongo"
     stop_grace_period: 10s
     stop_signal: SIGTERM
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
 
 
   gate:
@@ -113,12 +113,12 @@ services:
       - server-network
     stop_grace_period: 10s
     stop_signal: SIGTERM
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
 
   mail:
     image: mail:latest
@@ -145,12 +145,12 @@ services:
       # - "nsqd"
       - "loki"
       - "mongo"
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
 
   rank:
     image: rank:latest
@@ -177,12 +177,12 @@ services:
       # - "nsqd"
       - "loki"
       - "mongo"
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
 
   comment:
     image: comment:latest
@@ -209,12 +209,12 @@ services:
       # - "nsqd"
       - "loki"
       - "mongo"
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
         
   mongo:
     image: mongo:5.0
@@ -249,15 +249,12 @@ services:
     restart: unless-stopped
     ports:
       - "9216:9216"
+    command:
+      - '--mongodb.uri=mongodb://mongo:27017'
+      - '--collect-all'
+      - '--log.level=debug'
     environment:
       TZ: "Asia/Shanghai"
-      MONGODB_URI: "mongodb://exporter:exporter_pass@mongo:27017/admin?directConnection=true"
-      MONGODB_COLLECT_ALL: "true"
-      MONGODB_COLLECT_DATABASE: "true"
-      MONGODB_COLLECT_COLLECTION: "true"
-      MONGODB_COLLECT_TOPMETRICS: "true"
-      MONGODB_COLLECT_INDEXUSAGE: "true"
-      MONGODB_COLLECT_CONNPOOLSTATS: "true"
     depends_on:
       - mongo
     networks:
@@ -307,23 +304,23 @@ services:
       - "./data/consul/:/consul_data"
     depends_on:
       - loki
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
 
   nsqlookupd:
     image: nsqio/nsq
     command: /nsqlookupd -log-level=info
     container_name: nsqlookupd
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
     depends_on:
       - loki
     ports:
@@ -343,12 +340,12 @@ services:
       - "4151:4151"
     environment:
       TZ: "Asia/Shanghai"
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
 
     depends_on:
       - nsqlookupd
@@ -366,12 +363,12 @@ services:
       - "4171:4171"
     environment:
       TZ: "Asia/Shanghai"
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
 
   promtail:
     image: grafana/promtail
@@ -400,12 +397,12 @@ services:
     environment:
       GF_EXPLORE_ENABLED: "true"
       TZ: "Asia/Shanghai"
-    logging:
-      driver: loki
-      options:
-        loki-url: http://host.docker.internal:3100/api/prom/push
-        loki-retries: "5"
-        loki-batch-size: "400"
+#     logging:
+#       driver: loki
+#       options:
+#         loki-url: http://host.docker.internal:3100/api/prom/push
+#         loki-retries: "5"
+#         loki-batch-size: "400"
 
   prometheus:
     image: prom/prometheus:latest

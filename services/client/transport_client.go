@@ -275,7 +275,7 @@ func (c *TransportConnector) startMessageProcessing() {
 
 	// Start message sending goroutine
 	c.startSendGoroutine()
-	q
+
 	// Start message receiving goroutine
 	c.startReceiveGoroutine()
 

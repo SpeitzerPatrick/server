@@ -1,13 +1,22 @@
-FROM alpine
-RUN apk add tzdata
+# Build stage
+FROM golang:1.23-alpine AS builder
 
-RUN mkdir /app
-RUN mkdir /app/apps
-RUN mkdir /app/apps/client_bots
+WORKDIR /app
+COPY . .
+
+# Build the client_bots application
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod -o client_bots apps/client_bots/main.go
+
+# Runtime stage
+FROM alpine:3.18
+RUN apk add --no-cache tzdata
+
+RUN mkdir -p /app/apps/client_bots
 WORKDIR /app/apps/client_bots
 
 RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shanghai' >/etc/timezone
 
-ADD client_bots /app/apps/client_bots/client_bots
+COPY --from=builder /app/client_bots /app/apps/client_bots/client_bots
 
 ENTRYPOINT [ "/app/apps/client_bots/client_bots" ]
