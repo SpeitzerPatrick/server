@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/urfave/cli/v2"
@@ -27,5 +28,18 @@ type Cache interface {
 }
 
 func NewCache(ctx *cli.Context) Cache {
-	return NewDummyRedis(ctx)
+	// 根据环境变量或配置选择Redis实现
+	redisMode := os.Getenv("REDIS_MODE")
+	switch redisMode {
+	case "master-slave":
+		return NewMasterSlaveRedis(ctx)
+	case "cluster":
+		return NewClusterRedis(ctx)
+	case "single":
+		return NewGoRedis(ctx)
+	case "mini":
+		return NewMiniRedis(ctx)
+	default:
+		return NewDummyRedis(ctx) // 默认保持兼容性
+	}
 }

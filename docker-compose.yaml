@@ -65,6 +65,10 @@ services:
       MICRO_REGISTRY: "mdns"
       DB_DSN: "mongodb://mongo:27017"
       PUBLIC_IP: "game"
+      REDIS_MODE: "master-slave"
+      REDIS_MASTER_ADDR: "redis-master:6379"
+      REDIS_SLAVE_ADDR: "redis-slave:6379"
+      # REDIS_PASSWORD: "your_password_here"
     networks:
       - server-network
     depends_on:
@@ -291,6 +295,47 @@ services:
     #     loki-retries: "5"
     #     loki-batch-size: "400"
 
+  # Redis Master-Slave Configuration
+  redis-master:
+    image: redis:7.0-alpine
+    container_name: redis-master
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./config/redis/redis-master.conf:/usr/local/etc/redis/redis.conf
+      - redis_master_data:/data
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - game_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  redis-slave:
+    image: redis:7.0-alpine
+    container_name: redis-slave
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./config/redis/redis-slave.conf:/usr/local/etc/redis/redis.conf
+      - redis_slave_data:/data
+    command: redis-server /usr/local/etc/redis/redis.conf
+    depends_on:
+      - redis-master
+    networks:
+      - game_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   consul:
     image: consul:1.15.4
     command: "agent -server -bootstrap-expect=1 -bind=127.0.0.1 -enable-local-script-checks -log-level=info -config-dir=/config/consul -data-dir=/consul_data -ui -client=0.0.0.0"
@@ -433,3 +478,13 @@ services:
 networks:
   server-network:
     driver: bridge
+  game_network:
+    driver: bridge
+
+volumes:
+  mongo_data:
+    driver: local
+  redis_master_data:
+    driver: local
+  redis_slave_data:
+    driver: local

@@ -17,9 +17,13 @@ key_path_debug = "config/cert/localhost.key"
 cert_path_release = "config/cert/hellodudu.crt"
 key_path_release = "config/cert/hellodudu.key"
 
-client_bots_num = 100  # 减少到100个，避免过度压测
+client_bots_num = 3  # 进一步减少到3个，避免channel阻塞
 
 # http
 http_listen_addr = ":8083"
 
 gate_addr = "gate:7080"
+
+# MongoDB configuration for stress testing
+db_dsn = "mongodb://mongo:27017"
+database = "game"

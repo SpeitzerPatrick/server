@@ -28,7 +28,9 @@ key_path_release = "config/cert/localhost.key"
 # db
 db_dsn = "mongodb://mongo:27017"
 database = "game"
-redis_addr = "redis:6379"
+redis_master_addr = "redis-master:6379"
+redis_slave_addr = "redis-slave:6379"
+# redis_password = "your_password_here"
 
 # game evironment 线上环境不能用mdns作为registry，并发高的情况下会出现找不到服务的bug
 registry_debug = "mdns"
