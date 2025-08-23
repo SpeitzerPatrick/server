@@ -29,6 +29,10 @@ services:
       - "./config/csv/:/app/apps/client_bots/config/csv"
     environment:
       TZ: "Asia/Shanghai"
+      REDIS_MODE: "master-slave"
+      REDIS_MASTER_ADDR: "redis-master:6379"
+      REDIS_SLAVE_ADDR: "redis-slave:6379"
+      # REDIS_PASSWORD: "your_password_here"
     networks:
       - server-network
     depends_on:
@@ -307,7 +311,7 @@ services:
       - redis_master_data:/data
     command: redis-server /usr/local/etc/redis/redis.conf
     networks:
-      - game_network
+      - server-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -328,7 +332,7 @@ services:
     depends_on:
       - redis-master
     networks:
-      - game_network
+      - server-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s

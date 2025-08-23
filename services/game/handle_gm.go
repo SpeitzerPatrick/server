@@ -54,8 +54,16 @@ func (r *MsgRegister) handleGmCmd(ctx context.Context, p ...any) error {
 	err := gmCmd(acct, r, msg.Cmd)
 	if err != nil {
 		reply.Msg = fmt.Sprintf("gm命令错误:%s", err.Error())
+		log.Warn().Err(err).
+			Int64("account_id", acct.Id).
+			Str("command", msg.Cmd).
+			Msg("🚨 GM command failed")
 	} else {
 		reply.Msg = "gm命令成功"
+		log.Info().
+			Int64("account_id", acct.Id).
+			Str("command", msg.Cmd).
+			Msg("✅ GM command executed successfully")
 	}
 	acct.SendProtoMessage(reply)
 

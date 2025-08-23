@@ -131,6 +131,70 @@ func (r *MiniRedis) DeleteFields(prefix string, k any, fieldsName []string) erro
 	return nil
 }
 
+func (r *MiniRedis) SaveHashObject(prefix string, k interface{}, field interface{}, x interface{}) error {
+	key := fmt.Sprintf("%s:%v", prefix, k)
+	fieldStr := fmt.Sprintf("%v", field)
+
+	data, err := json.Marshal(x)
+	if err != nil {
+		return err
+	}
+
+	err = r.redisCli.HSet(key, fieldStr, data).Err()
+	if err != nil {
+		return err
+	}
+
+	// set expire
+	r.redisCli.Expire(key, ExpireTime)
+
+	return nil
+}
+
+func (r *MiniRedis) SaveHashAll(prefix string, k interface{}, fields map[string]interface{}) error {
+	key := fmt.Sprintf("%s:%v", prefix, k)
+
+	err := r.redisCli.HMSet(key, fields).Err()
+	if err != nil {
+		return err
+	}
+
+	// set expire
+	r.redisCli.Expire(key, ExpireTime)
+
+	return nil
+}
+
+func (r *MiniRedis) LoadHashAll(prefix string, keyValue interface{}) (interface{}, error) {
+	key := fmt.Sprintf("%s:%v", prefix, keyValue)
+
+	result, err := r.redisCli.HGetAll(key).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(result) == 0 {
+		return nil, ErrObjectNotFound
+	}
+
+	// update expire
+	r.redisCli.Expire(key, ExpireTime)
+
+	return result, nil
+}
+
+func (r *MiniRedis) DeleteHashObject(prefix string, k interface{}, field interface{}) error {
+	key := fmt.Sprintf("%s:%v", prefix, k)
+	fieldStr := fmt.Sprintf("%v", field)
+
+	err := r.redisCli.HDel(key, fieldStr).Err()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (r *MiniRedis) Exit() error {
 	r.Wait()
 	err := r.redisCli.Close()

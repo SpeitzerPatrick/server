@@ -9,9 +9,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-//-------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 // 伤害信息
-//-------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 type CalcDamageInfo struct {
 	Type       define.EDmgInfoType // 伤害方式
 	SchoolType define.ESchoolType  // 伤害类型
@@ -156,7 +156,28 @@ func (s *Skill) calcEffect() {
 
 	// 计算效果
 	for target := s.listTargets.Front(); target != nil; target = target.Next() {
-		s.doEffect(target.Value.(*SceneEntity))
+		result := s.doEffect(target.Value.(*SceneEntity))
+
+		// 处理效果结果
+		if !result.Success {
+			log.Error().
+				Err(result.Error).
+				Int32("skill_id", s.opts.Entry.Id).
+				Int64("target_id", target.Value.(*SceneEntity).GetId()).
+				Msg("skill effect failed")
+			continue
+		}
+
+		// 记录成功的效果统计
+		if result.Hit {
+			log.Debug().
+				Int32("skill_id", s.opts.Entry.Id).
+				Bool("crit", result.Crit).
+				Int64("damage", result.TotalDamage).
+				Int("effects", result.EffectCount).
+				Bool("kill", result.KillTarget).
+				Msg("skill effect applied successfully")
+		}
 	}
 
 	// 回复怒气
@@ -199,37 +220,79 @@ func (s *Skill) calcEffect() {
 	// )
 }
 
+// EffectResult 技能效果处理结果
+type EffectResult struct {
+	Success     bool  // 是否成功处理
+	Hit         bool  // 是否命中
+	Crit        bool  // 是否暴击
+	TotalDamage int64 // 总伤害
+	EffectCount int   // 处理的效果数量
+	KillTarget  bool  // 是否击杀目标
+	Error       error // 错误信息
+}
+
 // 技能效果
-func (s *Skill) doEffect(target *SceneEntity) {
+func (s *Skill) doEffect(target *SceneEntity) *EffectResult {
+	result := &EffectResult{Success: true}
+
+	// 1. 参数验证
+	if err := s.validateEffectParams(target); err != nil {
+		result.Success = false
+		result.Error = err
+		return result
+	}
+
+	// 2. 初始化效果数据
+	s.initializeEffectData()
+
+	// 3. 计算技能结果（命中、暴击等）
+	s.calSpellResult(target)
+	result.Hit = s.damageInfo.Hit
+	result.Crit = s.damageInfo.Crit
+
+	// 4. 处理所有技能效果
+	s.processAllEffects(target, result)
+
+	// 5. 应用最终伤害和触发器
+	s.applyFinalDamageAndTriggers(target, result)
+
+	return result
+}
+
+// validateEffectParams 验证效果处理参数
+func (s *Skill) validateEffectParams(target *SceneEntity) error {
 	if s.opts.Caster == nil {
 		log.Warn().Int32("skill_id", s.opts.Entry.Id).Msg("skill doEffect failed with no caster")
-		return
+		return errors.New("caster is nil")
 	}
 
 	if target == nil {
 		log.Warn().Int32("skill_id", s.opts.Entry.Id).Msg("skill doEffect failed with no target")
-		return
+		return errors.New("target is nil")
 	}
 
 	scene := s.GetScene()
 	if scene == nil {
 		log.Warn().Int32("skill_id", s.opts.Entry.Id).Msg("skill doEffect failed with cannot get caster's scene")
-		return
+		return errors.New("scene is nil")
 	}
 
-	// 初始化
+	return nil
+}
+
+// initializeEffectData 初始化效果数据
+func (s *Skill) initializeEffectData() {
 	s.baseDamage = 0
 	s.damageInfo.Reset()
 	s.damageInfo.SpellId = int32(s.opts.Entry.Id)
 	s.damageInfo.ProcCaster = s.procCaster
 	s.damageInfo.ProcTarget = s.procTarget
 	s.damageInfo.ProcEx = s.procEx
-
-	// 计算技能结果
-	s.calSpellResult(target)
-
 	s.effectFlag = 0
+}
 
+// processAllEffects 处理所有技能效果
+func (s *Skill) processAllEffects(target *SceneEntity, result *EffectResult) {
 	// 计算技能效果
 	for _, timelineId := range s.opts.Entry.TimelineID {
 		skillTimelineEntry, ok := auto.GetSkillTimelineEntry(timelineId)
@@ -250,26 +313,49 @@ func (s *Skill) doEffect(target *SceneEntity) {
 				continue
 			}
 
-			// 效果命中抵抗概率
-			if effectEntry.IsEffectHit == define.SkillEffectHitResistProb {
-				effectHit := s.opts.Caster.GetAttManager().GetFinalAttValue(define.Att_EffectHit)
-				effectResist := target.GetAttManager().GetFinalAttValue(define.Att_EffectResist)
-				hit := effectHit.Sub(effectResist).Mul(decimal.NewFromInt(define.PercentBase)).Round(0).IntPart()
-				if s.GetScene().Rand(1, define.PercentBase) > int(hit) {
-					continue
-				}
-			} else {
-				// effect静态表效果命中概率
-				if s.GetScene().Rand(1, define.PercentBase) > int(effectEntry.Prob) {
-					continue
-				}
+			// 检查效果是否命中
+			if !s.checkEffectHit(effectEntry, target) {
+				continue
 			}
 
-			// 技能效果处理
-			handleSkillEffect(s, effectEntry, target)
+			// 处理单个技能效果
+			s.processSingleEffect(effectEntry, target, result)
+			result.EffectCount++
 		}
 	}
+}
 
+// checkEffectHit 检查效果是否命中
+func (s *Skill) checkEffectHit(effectEntry *auto.SkillEffectEntry, target *SceneEntity) bool {
+	if effectEntry.IsEffectHit == define.SkillEffectHitResistProb {
+		// 效果命中抵抗概率
+		effectHit := s.opts.Caster.GetAttManager().GetFinalAttValue(define.Att_EffectHit)
+		effectResist := target.GetAttManager().GetFinalAttValue(define.Att_EffectResist)
+		hit := effectHit.Sub(effectResist).Mul(decimal.NewFromInt(define.PercentBase)).Round(0).IntPart()
+		return s.GetScene().Rand(1, define.PercentBase) <= int(hit)
+	} else {
+		// effect静态表效果命中概率
+		return s.GetScene().Rand(1, define.PercentBase) <= int(effectEntry.Prob)
+	}
+}
+
+// processSingleEffect 处理单个技能效果
+func (s *Skill) processSingleEffect(effectEntry *auto.SkillEffectEntry, target *SceneEntity, result *EffectResult) {
+	// 记录处理前的伤害值
+	beforeDamage := s.baseDamage
+
+	// 调用效果处理器
+	handleSkillEffect(s, effectEntry, target)
+
+	// 计算本次效果造成的伤害增量
+	effectDamage := s.baseDamage - beforeDamage
+	if effectDamage > 0 {
+		result.TotalDamage += effectDamage
+	}
+}
+
+// applyFinalDamageAndTriggers 应用最终伤害和触发器
+func (s *Skill) applyFinalDamageAndTriggers(target *SceneEntity, result *EffectResult) {
 	if s.effectFlag != 0 && s.baseDamage > 0 {
 		// 计算伤害
 		s.dealHeal(target, s.baseDamage, &s.damageInfo)
@@ -278,40 +364,58 @@ func (s *Skill) doEffect(target *SceneEntity) {
 		// 产生伤害
 		target.DoneDamage(s.opts.Caster, &s.damageInfo)
 
-		// 触发信息改变
-		if define.DmgInfo_Damage == s.damageInfo.Type && s.damageInfo.Damage > 0 {
-			s.damageInfo.ProcTarget |= (1 << define.AuraEvent_Taken_Any_Damage)
+		// 更新结果信息
+		result.TotalDamage = s.damageInfo.Damage
 
-			if target.HasState(define.HeroState_Dead) {
-				s.damageInfo.ProcCaster |= (1 << define.AuraEvent_Kill)
-				s.damageInfo.ProcTarget |= (1 << define.AuraEvent_Killed)
-				s.damageInfo.ProcEx |= (1 << define.AuraEvent_Killed)
-				s.killEntity = true
-				s.finalProcCaster |= (1 << define.AuraEvent_Kill)
-			} else {
-				// 是否触发反击
-				// if s.opts.Entry.BeatBack && (s.damageInfo.ProcEx&(1<<define.AuraEventEx_Block) != 0) {
-				// 	s.listBeatBack.PushBack(target)
-				// }
-			}
-		}
+		// 处理伤害相关事件
+		s.processDamageEvents(target, result)
 
-		// 发送伤害
+		// 发送伤害信息（当前被注释）
 		// scene.SendDamage(&s.damageInfo)
 	}
 
+	// 处理触发器
+	s.processTriggers(target)
+}
+
+// processDamageEvents 处理伤害相关事件
+func (s *Skill) processDamageEvents(target *SceneEntity, result *EffectResult) {
+	if define.DmgInfo_Damage == s.damageInfo.Type && s.damageInfo.Damage > 0 {
+		s.damageInfo.ProcTarget |= (1 << define.AuraEvent_Taken_Any_Damage)
+
+		if target.HasState(define.HeroState_Dead) {
+			// 目标死亡处理
+			s.damageInfo.ProcCaster |= (1 << define.AuraEvent_Kill)
+			s.damageInfo.ProcTarget |= (1 << define.AuraEvent_Killed)
+			s.damageInfo.ProcEx |= (1 << define.AuraEvent_Killed)
+			s.killEntity = true
+			s.finalProcCaster |= (1 << define.AuraEvent_Kill)
+			result.KillTarget = true
+		} else {
+			// 是否触发反击（当前被注释）
+			// if s.opts.Entry.BeatBack && (s.damageInfo.ProcEx&(1<<define.AuraEventEx_Block) != 0) {
+			// 	s.listBeatBack.PushBack(target)
+			// }
+		}
+	}
+}
+
+// processTriggers 处理触发器
+func (s *Skill) processTriggers(target *SceneEntity) {
 	if s.damageInfo.ProcTarget != 0 {
+		// 目标触发器（当前被注释）
 		// target.getCombatCtrl().TriggerBySpellResult(false, s.opts.Caster, &s.damageInfo)
 	}
 
 	if s.opts.Caster != nil {
+		// 施法者触发器（当前被注释）
 		// s.opts.Caster.getCombatCtrl().TriggerBySpellResult(true, target, &s.damageInfo)
 	}
 }
 
-//-------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 // 施放反击技能
-//-------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 func (s *Skill) castBeatBackSpell() {
 	for e := s.listBeatBack.Front(); e != nil; e = e.Next() {
 		target := e.Value.(*SceneEntity)
@@ -560,9 +664,9 @@ func (s *Skill) dealHeal(target *SceneEntity, baseHeal int64, damageInfo *CalcDa
 	}
 }
 
-//--------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------
 // 效果是否可作用于目标
-//--------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------
 func (s *Skill) checkEffectValid(effectEntry *auto.SkillEffectEntry, target *SceneEntity) bool {
 	// if s.opts.Entry.Effects[index] == define.SpellEffectType_Null {
 	// 	return false

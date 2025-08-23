@@ -1,0 +1,7 @@
+FROM alpine:3.18
+RUN apk add --no-cache tzdata
+RUN mkdir -p /app/server/apps/game
+WORKDIR /app/server/apps/game
+RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shanghai' >/etc/timezone
+COPY game /app/server/apps/game/game
+ENTRYPOINT [ "/app/server/apps/game/game" ]

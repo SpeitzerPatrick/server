@@ -15,7 +15,7 @@ const (
 // 目标类型
 const (
 	SkillTargetType_Begin          int32 = 0
-	SkillTargetType_SelfRound      int32 = 0 // 自身周围
+	SkilltargettypeSelfround       int32 = 0 // 自身周围
 	SkillTargetType_SelectRound    int32 = 1 // 选定空间
 	SkillTargetType_FriendlySingle int32 = 2 // 友军单体
 	SkillTargetType_EnemySingle    int32 = 3 // 敌军单体

@@ -72,7 +72,7 @@ func NewMasterSlaveRedis(ctx *cli.Context) *MasterSlaveRedis {
 	log.Info().
 		Str("master", masterAddr).
 		Str("slave", slaveAddr).
-		Msg("Redis master-slave connection established")
+		Msg("🎯 Redis master-slave connection established successfully!")
 
 	return r
 }

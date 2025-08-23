@@ -287,15 +287,33 @@ func (e *clientExecutor) run() {
 		return
 	}
 
-	// Continuous game operations - 压测模式：快速连续添加物品
-	for e.err == nil {
-		// 连续执行多次添加操作进行压测
-		e.addExecute(AddItemExecution)
-		e.addExecute(AddItemExecution)
-		e.addExecute(AddItemExecution)
+	log.Info().Int64("client_id", e.clientID).Msg("🎯 MODIFIED CODE IS WORKING - starting continuous item addition stress test")
 
-		// 短暂休息避免过度压测
-		time.Sleep(time.Millisecond * 10)
+	// 使用定时器进行压测，避免过度频繁的操作
+	ticker := time.NewTicker(15 * time.Second) // 每15秒执行一次
+	defer ticker.Stop()
+
+	itemAddCount := 0
+
+	for e.err == nil {
+		select {
+		case <-ticker.C:
+			// 直接发送GM命令，完全跳过执行队列
+			e.sendGMCommandDirectly()
+			itemAddCount++
+
+			// 每添加3个商品记录一次日志
+			if itemAddCount%3 == 0 {
+				log.Info().
+					Int64("client_id", e.clientID).
+					Int("items_added", itemAddCount).
+					Msg("stress test progress")
+			}
+
+		case <-e.ctx.Done():
+			e.err = errors.New("context cancelled")
+			return
+		}
 	}
 
 	log.Info().Int64("client_id", e.clientID).Err(e.err).
@@ -316,6 +334,43 @@ func (e *clientExecutor) addExecute(fn ExecuteFunc) {
 	}
 
 	e.err = e.clientBots.AddClientExecute(e.ctx.Context, e.clientID, fn)
+}
+
+// sendGMCommandDirectly sends GM command directly without going through execution queue
+func (e *clientExecutor) sendGMCommandDirectly() {
+	// 获取客户端
+	e.clientBots.RLock()
+	client, ok := e.clientBots.mapClients[e.clientID]
+	e.clientBots.RUnlock()
+
+	if !ok {
+		log.Debug().Int64("client_id", e.clientID).Msg("client not found for direct GM command")
+		return
+	}
+
+	// 只使用确认有效的物品类型
+	itemTypes := []int{1, 2, 3, 4, 5, 6}
+	quantities := []int{1, 2, 3, 5}
+
+	// 使用时间戳增加随机性
+	now := time.Now().UnixNano()
+	itemType := itemTypes[(e.clientID+now)%int64(len(itemTypes))]
+	quantity := quantities[(e.clientID+now/1000)%int64(len(quantities))]
+
+	command := fmt.Sprintf("gm item add %d %d", itemType, quantity)
+
+	// 创建GM命令消息
+	message := &pbGlobal.C2S_GmCmd{
+		Cmd: command,
+	}
+
+	// 直接发送，不等待响应
+	client.transport.SendMessage(message)
+
+	// 记录每个GM命令的发送
+	log.Info().Int64("client_id", e.clientID).
+		Str("command", command).
+		Msg("🎯 GM command sent successfully")
 }
 
 func (c *ClientBots) Run(arguments []string) error {

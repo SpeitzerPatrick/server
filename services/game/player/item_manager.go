@@ -556,6 +556,9 @@ func (m *ItemManager) AddItemByTypeId(typeId int32, num int32) error {
 					return true
 				}
 
+				// prometheus ops - count item quantity increase as creation
+				prom.OpsCreateItemCounter.Add(float64(add))
+
 				m.SendItemUpdate(it)
 				incNum -= add
 			}
@@ -578,8 +581,8 @@ func (m *ItemManager) AddItemByTypeId(typeId int32, num int32) error {
 		err := store.GetStore().UpdateOne(context.Background(), define.StoreType_Item, it.Opts().Id, it)
 		utils.ErrPrint(err, "UpdateManual failed when ItemManager.AddItemByTypeId", typeId, m.owner.ID)
 
-		// prometheus ops
-		prom.OpsCreateItemCounter.Inc()
+		// prometheus ops - count actual item quantity created
+		prom.OpsCreateItemCounter.Add(float64(it.Opts().Num))
 
 		m.SendItemAdd(it)
 		incNum -= it.Opts().Num
